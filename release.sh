@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publishes the committed state of bin/, plugins/ and statusline/ to a stable
+# Publishes the committed state of bin/ and plugins/ to a stable
 # copy that running sessions load. Sessions hot-reload a mod whenever its files
 # change, so they must never point at the working tree you are editing.
 #
@@ -8,7 +8,7 @@
 #   ./release.sh --rollback <sha>
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
-DEST=${DEST:-$HOME/.local/share/claude-cache-keeper}
+DEST=${DEST:-$HOME/.local/share/claude-agents-kit}
 cd "$REPO"
 
 switch() { ln -sfn "releases/$1" "$DEST/current.new" && mv -T "$DEST/current.new" "$DEST/current"; echo "current -> $1"; }
@@ -38,7 +38,7 @@ python3 -m py_compile bin/agents
 sha=$(git rev-parse --short HEAD)
 mkdir -p "$DEST/releases"
 rm -rf "$DEST/releases/$sha.tmp" && mkdir -p "$DEST/releases/$sha.tmp"
-git archive HEAD bin plugins statusline | tar -x -C "$DEST/releases/$sha.tmp"
+git archive HEAD bin plugins | tar -x -C "$DEST/releases/$sha.tmp"
 rm -rf "$DEST/releases/$sha" && mv "$DEST/releases/$sha.tmp" "$DEST/releases/$sha"
 switch "$sha"
 # keep the last 5

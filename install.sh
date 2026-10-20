@@ -3,30 +3,18 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
 BIN=${BIN:-$HOME/.local/bin}
-UNITS=$HOME/.config/systemd/user
 
-CUR=${DEST:-$HOME/.local/share/claude-cache-keeper}/current
+CUR=${DEST:-$HOME/.local/share/claude-agents-kit}/current
 "$REPO/release.sh"
-mkdir -p "$BIN" "$UNITS"
+mkdir -p "$BIN"
 ln -sfn "$CUR/bin/agents" "$BIN/agents"
-ln -sfn "$CUR/statusline/cache-segment.sh" "$BIN/cache-segment.sh"
-echo "linked: $BIN/agents, $BIN/cache-segment.sh"
-
-if command -v systemctl >/dev/null && command -v tmux >/dev/null; then
-  cp "$REPO"/systemd/agents-compact-idle.{service,timer} "$UNITS/"
-  systemctl --user daemon-reload
-  systemctl --user enable --now agents-compact-idle.timer
-  echo "enabled: agents-compact-idle.timer"
-else
-  echo "skipped systemd timer (needs systemd and tmux)"
-fi
+echo "linked: $BIN/agents"
 
 cat <<MSG
 
-Add to ~/.claude/settings.json to load the mod in every new session:
+Add the mods to ~/.claude/settings.json (append to an existing list with ':'):
 
-  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$CUR/plugins/cache-keeper:$CUR/plugins/push-guard:$CUR/plugins/agents-panel" },
-  "statusLine": { "type": "command", "command": "<your status line script>", "refreshInterval": 30 }
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$CUR/plugins/push-guard:$CUR/plugins/agents-panel" }
 
-Already running sessions pick the mod up only after a restart.
+Already running sessions pick the mods up only after a restart.
 MSG

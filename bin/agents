@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""agents - live Claude Code sessions on this machine, and prompt-cache upkeep.
+"""agents - live Claude Code sessions on this machine: status, messages, up/down.
 
   agents status [--json [--max-age S]]
                                 all live sessions: status, idle time, cache left,
@@ -10,15 +10,10 @@
   agents messages [--hours H]   messages between sessions (SendMessage) in the last
                                 H hours (6 by default); ❄ marks a message that woke a
                                 recipient whose prompt cache had already expired
-  agents compact-idle [--dry-run]
-                                compact sessions whose cache is about to expire
-                                (idle 53..59 min; the cache-keeper mod inside a
-                                session fires at 50), if they run in tmux, are
-                                idle, have an empty input box and an uncompacted
-                                context above MIN_CTX tokens
   agents compact <name> [--wait]
-                                compact one session now (same checks except idle
-                                time); --wait - wait until done (exit 0 = done)
+                                compact one session now if it runs in tmux, is
+                                idle and has an empty input box; --wait - wait
+                                until done (exit 0 = done)
   agents up <project> [name...]   start a project's sessions in tmux
   agents down <project> [name...] [--no-compact]
                                 compact and close them (--no-compact: just close,
@@ -42,17 +37,17 @@ Projects come from two files:
                                   go to claude as written (e.g. --remote-control
                                   Duty "start the shift").
 
-Why: the prompt cache lives 1 hour from the last request. A session that wakes
-up after an hour of idling writes its whole context into the cache again at
-full price. /compact at minute 50-59 still reads the context from the cache
-(cheap) and leaves a small summary, so the next wake-up costs next to nothing.
+Why compact before closing: the prompt cache lives 1 hour from the last
+request. A session resumed after that writes its whole context into the cache
+again at full price; a compacted one writes only a short summary. Idle-time
+compaction lives in claude-cache-keeper.
 
 People: ~/.config/agents/people.conf, "session name | display name | f|m|-".
 Checklist snapshot: ~/.local/state/agents/checklist/items/*.json, one JSON per item
   ({id, data: {project, title, who, status, ...}}), as written by an artifact
   database dump; "waiting on you" = open items whose `who` is in OWNER_WHO.
-Log: ~/.local/state/agents/compact-idle.log
-Env: COMPACT_FROM, COMPACT_TO (minutes), MIN_CTX (tokens).
+Log: ~/.local/state/agents/compact.log
+Env: MIN_CTX (tokens; down skips compacting smaller contexts).
 """
 import json, os, re, shlex, subprocess, sys, time, glob, uuid
 from datetime import datetime, timezone
@@ -65,10 +60,8 @@ PEOPLE_CONF = os.path.expanduser("~/.config/agents/people.conf")
 CHECKLIST_DIR = os.path.expanduser("~/.local/state/agents/checklist/items")
 STATUS_CACHE = os.path.expanduser("~/.local/state/agents/status.json")
 OWNER_WHO = set(os.environ.get("OWNER_WHO", "владелец,вместе,ты,owner,together,you").split(","))
-LOG = os.path.expanduser("~/.local/state/agents/compact-idle.log")
+LOG = os.path.expanduser("~/.local/state/agents/compact.log")
 CACHE_TTL = 60
-COMPACT_FROM = int(os.environ.get("COMPACT_FROM", 53))  # the cache-keeper mod compacts at 50; this is the fallback
-COMPACT_TO = int(os.environ.get("COMPACT_TO", 59))
 MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
 TAIL_BYTES = 4 * 1024 * 1024
 
@@ -98,7 +91,6 @@ STRINGS = {
         "expired": "expired", "compact": "compact", "no_tmux": "no tmux",
         "not_in_tmux": "not in tmux", "draft": "input box has a draft",
         "status_is": "status {status}",
-        "would_compact": "would compact ({k}k, idle {idle:.0f} min)",
         "sent_compact": "/compact ({k}k, idle {idle:.0f} min, {label})",
         "done_compacted": "compacted",
         "done_nothing": "nothing to compact (Not enough messages)",
@@ -122,7 +114,6 @@ STRINGS = {
         "expired": "истёк", "compact": "сжато", "no_tmux": "не в tmux",
         "not_in_tmux": "не в tmux", "draft": "в поле ввода черновик",
         "status_is": "статус {status}",
-        "would_compact": "сжал бы ({k}k, простой {idle:.0f} мин)",
         "sent_compact": "/compact ({k}k, простой {idle:.0f} мин, {label})",
         "done_compacted": "сжато",
         "done_nothing": "сжимать нечего (Not enough messages)",
@@ -147,7 +138,7 @@ def t(key, **vars):
     return STRINGS[LANG].get(key, STRINGS["en"].get(key, key)).format(**vars)
 
 
-DOC_RU = """agents - живые сессии Claude Code на этой машине и уход за кэшем промпта.
+DOC_RU = """agents - живые сессии Claude Code на этой машине: статус, сообщения, up/down.
 
   agents status [--json [--max-age S]]
                                 все живые сессии: статус, простой, сколько ещё
@@ -158,15 +149,10 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
   agents messages [--hours H]   сообщения между сессиями (SendMessage) за
                                 последние H часов (по умолчанию 6); ❄ - сообщение
                                 разбудило адресата с уже остывшим кэшем
-  agents compact-idle [--dry-run]
-                                сжать сессии, у которых кэш скоро истечёт
-                                (простой 53..59 мин; мод cache-keeper внутри
-                                сессии срабатывает на 50-й), если они в tmux,
-                                простаивают, поле ввода пустое, а несжатый
-                                контекст больше MIN_CTX токенов
   agents compact <имя> [--wait]
-                                сжать одну сессию сейчас (те же проверки, кроме
-                                времени простоя); --wait - ждать конца (код 0 = готово)
+                                сжать одну сессию сейчас, если она в tmux,
+                                простаивает и поле ввода пустое; --wait - ждать
+                                конца (код 0 = готово)
   agents up <проект> [имя...]   поднять сессии проекта в tmux
   agents down <проект> [имя...] [--no-compact]
                                 сжать и закрыть (--no-compact: просто закрыть,
@@ -190,17 +176,16 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
                                   доп. аргументы уходят в claude как есть (например
                                   --remote-control Duty "start the shift").
 
-Зачем: кэш промпта живёт час с последнего запроса. Сессия, проснувшаяся после
-часа простоя, снова записывает весь контекст в кэш по полной цене. /compact на
-50-59-й минуте ещё читает контекст из кэша (дёшево) и оставляет короткую
-выжимку, так что следующее пробуждение почти ничего не стоит.
+Зачем сжимать перед закрытием: кэш промпта живёт час с последнего запроса.
+Сессия, возобновлённая позже, снова пишет весь контекст в кэш по полной цене;
+сжатая — только короткую выжимку. Сжатие по простою живёт в claude-cache-keeper.
 
 Люди: ~/.config/agents/people.conf, "имя сессии | отображаемое имя | f|m|-".
 Снимок чек-листа: ~/.local/state/agents/checklist/items/*.json, по JSON на пункт
   ({id, data: {project, title, who, status, ...}}), как пишет выгрузка базы
   артефакта; "ждёт тебя" = открытые пункты, у которых `who` из OWNER_WHO.
-Лог: ~/.local/state/agents/compact-idle.log
-Окружение: COMPACT_FROM, COMPACT_TO (минуты), MIN_CTX (токены).
+Лог: ~/.local/state/agents/compact.log
+Окружение: MIN_CTX (токены; down не сжимает контекст меньше).
 Язык: AGENTS_LANG=ru|en, иначе по LC_ALL / LC_MESSAGES / LANG.
 """
 
@@ -337,7 +322,7 @@ def input_empty(target):
     return re.sub(r"\x1b\[[0-9;]*m|\s", "", rest) == ""
 
 
-def do_compact(s, dry):
+def do_compact(s):
     why = None
     if not s["target"]:
         why = t("not_in_tmux")
@@ -348,9 +333,6 @@ def do_compact(s, dry):
     if why:
         log(f"skip  {s['name']}: {why}")
         return False
-    if dry:
-        log(f"dry   {s['name']}: " + t("would_compact", k=s["ctx"]//1000, idle=s["idle"]))
-        return True
     tmux("send-keys", "-t", s["target"], "-l", "/compact")
     time.sleep(0.5)
     tmux("send-keys", "-t", s["target"], "Enter")
@@ -522,17 +504,6 @@ def cmd_status_json(max_age):
     sys.stdout.write(out)
 
 
-def cmd_compact_idle(dry):
-    n = 0
-    for s in sessions():
-        if s["idle"] is None or not (COMPACT_FROM <= s["idle"] < COMPACT_TO):
-            continue
-        if s["ctx"] < MIN_CTX:
-            continue
-        n += do_compact(s, dry)
-    return n
-
-
 def boundary_after(sid, since):
     """Is there a compact_boundary in the transcript newer than since (unix time)."""
     paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
@@ -561,7 +532,7 @@ def compact_wait(s):
         return tmux("capture-pane", "-p", "-S", "-200", "-t", s["target"]).count(
             "Not enough messages to compact")
     before = nothing_to_do()
-    if not do_compact(s, False):
+    if not do_compact(s):
         return False
     # Done = a new compact_boundary in the transcript. The screen is no
     # proof: an old "Compacted" line from a previous run may still be
@@ -581,7 +552,7 @@ def compact_wait(s):
 def cmd_compact(name, wait):
     for s in sessions():
         if s["name"] == name:
-            return compact_wait(s) if wait else do_compact(s, False)
+            return compact_wait(s) if wait else do_compact(s)
     print(t("no_session", name=name))
     return False
 
@@ -728,8 +699,6 @@ def main(argv):
         cmd_status()
     elif c == "messages":
         cmd_messages(float(argv[argv.index("--hours") + 1]) if "--hours" in argv else 6)
-    elif c == "compact-idle":
-        cmd_compact_idle("--dry-run" in argv)
     elif c == "compact" and len(argv) >= 2:
         return 0 if cmd_compact(argv[1], "--wait" in argv) else 1
     elif c in ("up", "down") and len(argv) >= 2:
