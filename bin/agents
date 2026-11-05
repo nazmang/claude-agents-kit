@@ -504,10 +504,28 @@ def cmd_status_json(max_age):
                       "checklist": checklist(), "messages": msgs}, ensure_ascii=False)
     os.makedirs(os.path.dirname(STATUS_CACHE), exist_ok=True)
     tmp = STATUS_CACHE + f".{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(out)
-    os.replace(tmp, STATUS_CACHE)
+    try:
+        with open(tmp, "w") as f:
+            f.write(out)
+        os.replace(tmp, STATUS_CACHE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    sweep_status_tmp()
     sys.stdout.write(out)
+
+
+def sweep_status_tmp():
+    """Remove status.json.<pid> left by writers that were killed mid-write
+    (e.g. by the panel's timeout): their pid is gone."""
+    for path in glob.glob(STATUS_CACHE + ".*"):
+        pid = path.rsplit(".", 1)[1]
+        if not pid.isdigit() or os.path.exists(f"/proc/{pid}"):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def boundary_after(sid, since):
