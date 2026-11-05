@@ -42,7 +42,8 @@ request. A session resumed after that writes its whole context into the cache
 again at full price; a compacted one writes only a short summary. Idle-time
 compaction lives in claude-cache-keeper.
 
-People: ~/.config/agents/people.conf, "session name | display name | f|m|-".
+People: ~/.config/agents/people.conf, "session name | display name | f|m|-|x"
+  (x = hide the session, e.g. a dashboard window).
 Checklist snapshot: ~/.local/state/agents/checklist/items/*.json, one JSON per item
   ({id, data: {project, title, who, status, ...}}), as written by an artifact
   database dump; "waiting on you" = open items whose `who` is in OWNER_WHO.
@@ -103,6 +104,8 @@ STRINGS = {
         "how_resume": "resume {sid}", "how_new": "new {sid}",
         "close_yourself": "not in tmux - close it yourself (/compact, then /exit)",
         "not_closed": "not closed, compaction failed or session busy",
+        "still_running": "sent /exit, but process {pid} is still running after 30 s",
+        "bad_number": "{opt} needs a number",
         "busy_skipped": "busy or input box has a draft - skipped",
         "no_project": "no project '{name}' in {conf} or {sess}",
         "st_idle": "idle", "st_busy": "busy", "st_shell": "shell",
@@ -126,6 +129,8 @@ STRINGS = {
         "how_resume": "возобновление {sid}", "how_new": "новая {sid}",
         "close_yourself": "не в tmux - закрой руками (/compact, потом /exit)",
         "not_closed": "не закрыта: сжатие не вышло или сессия занята",
+        "still_running": "отправлен /exit, но процесс {pid} всё ещё работает через 30 с",
+        "bad_number": "{opt}: нужно число",
         "busy_skipped": "занята или в поле ввода черновик - пропущена",
         "no_project": "нет проекта '{name}' ни в {conf}, ни в {sess}",
         "st_idle": "ждёт", "st_busy": "занят", "st_shell": "фон",
@@ -180,7 +185,8 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
 Сессия, возобновлённая позже, снова пишет весь контекст в кэш по полной цене;
 сжатая — только короткую выжимку. Сжатие по простою живёт в claude-cache-keeper.
 
-Люди: ~/.config/agents/people.conf, "имя сессии | отображаемое имя | f|m|-".
+Люди: ~/.config/agents/people.conf, "имя сессии | отображаемое имя | f|m|-|x"
+  (x = скрыть сессию, например окно-дашборд).
 Снимок чек-листа: ~/.local/state/agents/checklist/items/*.json, по JSON на пункт
   ({id, data: {project, title, who, status, ...}}), как пишет выгрузка базы
   артефакта; "ждёт тебя" = открытые пункты, у которых `who` из OWNER_WHO.
@@ -498,10 +504,28 @@ def cmd_status_json(max_age):
                       "checklist": checklist(), "messages": msgs}, ensure_ascii=False)
     os.makedirs(os.path.dirname(STATUS_CACHE), exist_ok=True)
     tmp = STATUS_CACHE + f".{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(out)
-    os.replace(tmp, STATUS_CACHE)
+    try:
+        with open(tmp, "w") as f:
+            f.write(out)
+        os.replace(tmp, STATUS_CACHE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    sweep_status_tmp()
     sys.stdout.write(out)
+
+
+def sweep_status_tmp():
+    """Remove status.json.<pid> left by writers that were killed mid-write
+    (e.g. by the panel's timeout): their pid is gone."""
+    for path in glob.glob(STATUS_CACHE + ".*"):
+        pid = path.rsplit(".", 1)[1]
+        if not pid.isdigit() or os.path.exists(f"/proc/{pid}"):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def boundary_after(sid, since):
@@ -557,12 +581,27 @@ def cmd_compact(name, wait):
     return False
 
 
+def split_comment(line):
+    """(body, comment): a comment starts at '#' outside quotes that opens the
+    line or follows whitespace, so `"fix issue #5"` and `a#b` stay intact."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i], line[i:]
+    return line, ""
+
+
 def conf_lines(path):
     if not os.path.exists(path):
         return []
     out = []
     for line in open(path):
-        line = line.split("#", 1)[0].strip()
+        line = split_comment(line)[0].strip()
         if line:
             out.append([p.strip() for p in line.split("|")])
     return out
@@ -585,11 +624,14 @@ def session_lines(name, names):
 def save_session_id(project, name, sid):
     lines = open(SESS_CONF).read().splitlines(keepends=True)
     for i, line in enumerate(lines):
-        parts = [p.strip() for p in line.split("#", 1)[0].split("|")]
+        body, comment = split_comment(line.rstrip("\n"))
+        parts = [p.strip() for p in body.split("|")]
         if len(parts) >= 2 and parts[0] == project and parts[1] == name:
             parts += [""] * (6 - len(parts))
             parts[4] = sid
-            lines[i] = " | ".join(parts[:5] + ([parts[5]] if parts[5] else [])) + "\n"
+            # keep a trailing comment and everything after the 6th column
+            new = " | ".join(parts[:5] + (["|".join(parts[5:]).strip()] if any(parts[5:]) else []))
+            lines[i] = new + (" " + comment if comment else "") + "\n"
     with open(SESS_CONF, "w") as f:
         f.writelines(lines)
 
@@ -656,6 +698,10 @@ def sessions_down(project, rows, compact=True):
             if "Background work is running" in screen and "Exit and stop tasks" in screen:
                 tmux("send-keys", "-t", s["target"], "Enter")
             time.sleep(1)
+        if os.path.exists(f"/proc/{s['pid']}"):
+            print(f"  ! {s['name']}: " + t("still_running", pid=s["pid"]))
+            rc = 1
+            continue
         print(f"  - {s['name']}: " + t("closed_cold", sid=s["sid"]))
     return rc
 
@@ -688,17 +734,26 @@ def cmd_updown(which, name, names):
     return sessions_up(name, rows, fresh) if which == "up" else sessions_down(name, rows, compact)
 
 
+def opt_number(argv, opt, default):
+    if opt not in argv:
+        return default
+    i = argv.index(opt)
+    try:
+        return float(argv[i + 1])
+    except (IndexError, ValueError):
+        sys.exit(t("bad_number", opt=opt))
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(DOC_RU if LANG == "ru" else __doc__); return 0
     c = argv[0]
     if c == "status" and "--json" in argv:
-        age = float(argv[argv.index("--max-age") + 1]) if "--max-age" in argv else 0
-        cmd_status_json(age)
+        cmd_status_json(opt_number(argv, "--max-age", 0))
     elif c == "status":
         cmd_status()
     elif c == "messages":
-        cmd_messages(float(argv[argv.index("--hours") + 1]) if "--hours" in argv else 6)
+        cmd_messages(opt_number(argv, "--hours", 6))
     elif c == "compact" and len(argv) >= 2:
         return 0 if cmd_compact(argv[1], "--wait" in argv) else 1
     elif c in ("up", "down") and len(argv) >= 2:

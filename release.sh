@@ -25,7 +25,12 @@ untracked=$(git ls-files --others --exclude-standard)
 if [ -n "$untracked" ]; then
   echo "untracked files (commit or .gitignore them; the GitHub copy would miss them):"; echo "$untracked"; exit 1
 fi
-if command -v claude >/dev/null; then
+if ! command -v claude >/dev/null; then
+  if [ "${SKIP_PLUGIN_CHECKS:-}" != 1 ]; then
+    echo "claude is not on PATH: cannot validate and test the plugins (SKIP_PLUGIN_CHECKS=1 to release anyway)"; exit 1
+  fi
+  echo "warning: SKIP_PLUGIN_CHECKS=1, plugins are released without validate/test"
+else
   for p in plugins/*/; do
     claude plugin validate "$p" >/dev/null 2>&1 || { echo "validate failed: $p"; exit 1; }
     if [ -d "$p/tests" ]; then
@@ -37,6 +42,10 @@ python3 -m py_compile bin/agents
 
 sha=$(git rev-parse --short HEAD)
 mkdir -p "$DEST/releases"
+if [ -d "$DEST/releases/$sha" ]; then
+  # same commit already released: never rewrite a tree live sessions load from
+  switch "$sha"; exit 0
+fi
 rm -rf "$DEST/releases/$sha.tmp" && mkdir -p "$DEST/releases/$sha.tmp"
 git archive HEAD bin plugins | tar -x -C "$DEST/releases/$sha.tmp"
 rm -rf "$DEST/releases/$sha" && mv "$DEST/releases/$sha.tmp" "$DEST/releases/$sha"

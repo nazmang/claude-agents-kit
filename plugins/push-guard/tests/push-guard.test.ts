@@ -135,7 +135,7 @@ test('a Russian locale: question, options and log in Russian, the refusal for th
   expect(r.deny).toMatch(/was already merged into 'main'.*the user declined the push/)
 })
 
-test('a Russian "yes" lets the push run; AGENTS_LANG=en beats a Russian LANG', async ($, on) => {
+test('a Russian "yes" (AGENTS_LANG=ru) lets the push run', async ($, on) => {
   const s = setup(on, { 'feat/x': merged }, 'feat/x', false, STRINGS.ru.yes, { AGENTS_LANG: 'ru' })
   const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
   expect(r.deny).toBeUndefined()

@@ -161,16 +161,25 @@ export function waitingLine(cl) {
   return t('waiting_line', { w: cl.waiting.length, o: cl.open, at: hhmm(cl.snapshot) })
 }
 
-async function refresh($) {
-  let r
+async function runAgents($, bin) {
   try {
-    r = await $.process.run([agentsBin, 'status', '--json', '--max-age', String(MAX_AGE)], { timeoutMs: 10000 })
+    return await $.process.run([bin, 'status', '--json', '--max-age', String(MAX_AGE)], { timeoutMs: 10000 })
   } catch (err) {
-    r = { exitCode: 1, stdout: '', stderr: String(err?.message ?? err) }
+    return { exitCode: 1, stdout: '', stderr: String(err?.message ?? err) }
   }
+}
+
+async function refresh($) {
+  let r = await runAgents($, agentsBin)
+  // `agents` may be missing from the PATH the session got: try the default
+  // install location, but switch to it only if it actually works there, so a
+  // single slow cold start does not pin a path that does not exist
   if (r.exitCode !== 0 && agentsBin === 'agents') {
     const home = await $.env.get('HOME')
-    if (home) { agentsBin = `${home}/.local/bin/agents`; return refresh($) }
+    if (home) {
+      const alt = await runAgents($, `${home}/.local/bin/agents`)
+      if (alt.exitCode === 0) { agentsBin = `${home}/.local/bin/agents`; r = alt }
+    }
   }
   if (r.exitCode !== 0) { error = (r.stderr || t('agents_failed')).split('\n')[0]; return }
   try { data = JSON.parse(r.stdout); error = '' } catch { error = t('bad_json') }

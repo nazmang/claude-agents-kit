@@ -1,31 +1,51 @@
 # claude-agents-kit
 
-Tools for running many long-lived [Claude Code](https://claude.com/claude-code)
-sessions on one machine: an agent team in tmux, a few project tabs.
+**Run a whole team of long-lived [Claude Code](https://claude.com/claude-code) sessions on one machine, and keep an eye on it.**
+
+![License: MIT](https://img.shields.io/badge/license-MIT-blue)
+![Claude Code mods](https://img.shields.io/badge/Claude%20Code-mods-D97757)
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational)
 
 [Русская версия](README.ru.md)
 
-Prompt-cache upkeep (compacting idle sessions before the cache expires) lives in
-a separate repo, [claude-cache-keeper](https://github.com/nazmang/claude-cache-keeper).
-The two work together but do not need each other.
+You keep an agent team in tmux and a few project tabs open for days. This kit
+gives you:
+
+- **`agents`**: one table of every live session on the machine (busy or idle,
+  cache left, context size, model, tmux window), plus `up` / `down` to start
+  and stop a project's sessions in tmux without losing their cache.
+- **agents-panel**: a one-line band above the prompt with who is working
+  right now, and a `/team` pane where every session is a pixel figure in its
+  model's colour.
+- **push-guard**: stops `git push` to a branch whose PR is already merged and
+  asks *you* before anything goes out.
+
+Prompt-cache upkeep (compacting idle sessions before the cache expires) lives
+in a sibling repo, [claude-cache-keeper](https://github.com/nazmang/claude-cache-keeper).
+The two work well together but do not need each other.
 
 ## What is inside
 
 | part | what it does | needs |
 |---|---|---|
-| `bin/agents` | `agents status` — every live session on the machine: status, idle, cache left, context, model, tmux window. `agents up/down` — start and stop a project's sessions in tmux. `agents messages` — messages between sessions. | Python 3, tmux |
-| `plugins/push-guard/` — **push-guard mod** | Stops `git push` to a branch whose PR is already merged (the commits would never reach the base branch) and asks **you** in a dialog; only your “yes” lets it run, otherwise the agent is told to start a fresh branch. There is no override the model can type itself. No answer within `PUSH_GUARD_ASK_MIN` minutes (10) is a refusal, so an unattended agent never hangs on the question; a desktop notification tells you an agent is waiting. Unknown repos and missing `gh` pass through. | `gh` logged in |
-| `plugins/agents-panel/` — **agents-panel mod** | A one-line band above the prompt: who is working right now, how many sessions are idle and how many of them have a cold cache (💤), the latest message between sessions, and how many checklist items wait on you. `/team` toggles the full pane: every live session as a pixel girl or boy (`people.conf`) in the model's colour (Haiku blue, Sonnet amber, Opus purple, Fable green), what each is doing, the recent messages; click a name (or press 1–9) to jump to its tmux window. `/checklist` toggles a read-only tab with open items by project, yours first. | `bin/agents` on `PATH` |
+| `bin/agents` | `agents status`: every live session on the machine with status, idle time, cache left, context, model and tmux window. `agents up/down`: start and stop a project's sessions in tmux. `agents messages`: messages between sessions. | Python 3, tmux |
+| `plugins/push-guard/` (**push-guard mod**) | Stops `git push` to a branch whose PR is already merged (the commits would never reach the base branch) and asks **you** in a dialog. Only your "yes" lets it run; otherwise the agent is told to start a fresh branch. There is no override the model can type itself. No answer within `PUSH_GUARD_ASK_MIN` minutes (10) counts as a refusal, so an unattended agent never hangs on the question; a desktop notification tells you an agent is waiting. Unknown repos and missing `gh` pass through. | `gh` logged in |
+| `plugins/agents-panel/` (**agents-panel mod**) | A one-line band above the prompt: who is working right now, how many sessions are idle and how many of them have a cold cache (💤), the latest message between sessions, and how many checklist items wait on you. `/team` toggles the full pane: every live session as a pixel girl or boy (`people.conf`) in the model's colour (Haiku blue, Sonnet amber, Opus purple, Fable green), what each is doing, the recent messages; click a name (or press 1–9) to jump to its tmux window. `/checklist` toggles a read-only tab with open items by project, yours first. | `bin/agents` on `PATH` |
 
-## Install
+## Quick start
 
 ```bash
 git clone https://github.com/nazmang/claude-agents-kit ~/src/claude-agents-kit
 ~/src/claude-agents-kit/install.sh
+
+# optional: example configs to edit
+mkdir -p ~/.config/agents
+cp -n ~/src/claude-agents-kit/examples/*.conf ~/.config/agents/
 ```
 
 The installer cuts a release (`release.sh`) and links `agents` from it into
-`~/.local/bin`. It does **not** touch `settings.json`; add the mods yourself:
+`~/.local/bin`. It does **not** touch `settings.json`; add the mods yourself
+(replace `/home/you`):
 
 ```jsonc
 // ~/.claude/settings.json
@@ -38,11 +58,20 @@ The installer cuts a release (`release.sh`) and links `agents` from it into
 With claude-cache-keeper installed too, put all three mod paths into the same
 variable.
 
-> Set the variable in `settings.json`, not in the shell: exported in the
-> environment it was not picked up in our tests (Claude Code 2.1.296).
+> [!IMPORTANT]
+> - **Running sessions do not pick a mod up**, not even with `/reload-plugins`:
+>   the plugin dir list is read at process start. Restart them (after `/compact`!).
+> - Set the variable in `settings.json`, not in the shell: exported in the
+>   environment it was not picked up (Claude Code 2.1.296).
 
-> **Running sessions do not pick a mod up**, not even with `/reload-plugins`:
-> the plugin dir list is read at process start. Restart them (after `/compact`!).
+### Requirements
+
+- Linux: `agents` reads `/proc`, `release.sh` uses GNU `mv -T`
+- Python 3 and tmux
+- Claude Code with mods support (tested on 2.1.296 and 2.1.318)
+- `gh`, logged in, for push-guard
+- `agents compact` and `down` find the input box by the `❯` prompt of the
+  default Claude Code terminal UI
 
 ## Usage
 
@@ -55,30 +84,32 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 ```
 
 - `context` = `compact` means nothing has been added since the last compaction.
-- `agents compact <name> --wait` — compact one session now and wait until the
+- `agents compact <name> --wait`: compact one session now and wait until the
   transcript gets a new `compact_boundary`.
-- `agents up|down <project> [names…]` — start/stop a project's sessions in tmux.
+- `agents up|down <project> [names…]`: start/stop a project's sessions in tmux.
   - Plain sessions: list them in `~/.config/agents/sessions.conf`
-    (`project | name | dir | model | session id`). `up` opens tmux session
-    `<project>`, one window per line, with `claude -n <name> --resume <id>`; a
-    line without an id starts a new session and records its id. Sessions that
-    are already running — in tmux or in some terminal tab — are left alone.
-    `down` compacts each session first, then sends `/exit`; busy sessions and
-    drafts in the input box are skipped.
+    (`project | name | dir | model | session id [| extra args]`). `up` opens
+    tmux session `<project>`, one window per line, with
+    `claude -n <name> --resume <id>`; a line without an id starts a new session
+    and records its id. Sessions that are already running, in tmux or in some
+    terminal tab, are left alone. `down` compacts each session first, then
+    sends `/exit`; busy sessions and drafts in the input box are skipped.
   - Teams with their own start/stop scripts: `~/.config/agents/projects.conf`
     (`project | dir | up command | down command`).
   - Moving a session from a terminal tab into tmux: `/compact`, `/exit` in the
     tab, then `agents up <project>`.
-- `agents down <project> --no-compact` closes without compacting — for a
-  session whose cache is already cold, where compaction would itself re-read
-  the whole context at full price. `agents up <project> --fresh` ignores the
+  - `#` starts a comment at the start of a line or after a space, outside
+    quotes: `--append-system-prompt "fix issue #5"` is kept as is.
+- `agents down <project> --no-compact` closes without compacting: for a
+  session whose cache is already cold, compaction would itself re-read the
+  whole context at full price. `agents up <project> --fresh` ignores the
   stored id and starts a new session (e.g. a nightly clean restart of a
-  watcher). An optional 6th column in `sessions.conf` adds extra `claude`
+  watcher). The optional 6th column in `sessions.conf` adds extra `claude`
   arguments for that session.
 - A session that only runs a background shell or monitor shows as `shell`; it
   counts as free, and `down` answers the "Background work is running" dialog
   itself.
-- `agents messages [--hours H]` — messages between sessions (SendMessage);
+- `agents messages [--hours H]`: messages between sessions (SendMessage);
   ❄ marks a message that woke a recipient with an expired cache.
 - Log of compactions done by `agents`: `~/.local/state/agents/compact.log`.
 
@@ -87,9 +118,10 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 The mod has no file system, so it asks `agents status --json --max-age 5`; the
 answer is cached, so all sessions together recompute it at most every 5 s.
 
-- `~/.config/agents/people.conf` — `session name | display name | f|m|-|x` (see `examples/`).
+- `~/.config/agents/people.conf`: `session name | display name | f|m|-|x`
+  (girl, boy, anyone, hidden; see `examples/`).
 - Checklist: one JSON per item in `~/.local/state/agents/checklist/items/`
-  (`{id, data: {project, title, who, status}}`) — e.g. a dump of a Claude
+  (`{id, data: {project, title, who, status}}`), e.g. a dump of a Claude
   artifact database. Open items (`status: todo`) whose `who` is in `OWNER_WHO`
   (default `owner,together,you` and their Russian twins) count as waiting on you.
 
@@ -103,6 +135,34 @@ among the agents. Panes stand beside the prompt only when the terminal is wide
 enough; otherwise they open above it. Pixel figures (`Raster`) are drawn by the
 terminal UI only.
 
+### Settings
+
+| variable | default | what it does |
+|---|---|---|
+| `MIN_CTX` | `60000` | `agents down`: skip compacting smaller contexts |
+| `OWNER_WHO` | `owner,together,you` + Russian twins | checklist: whose items wait on you |
+| `PUSH_GUARD_ASK_MIN` | `10` | push-guard: minutes to wait for your answer |
+| `AGENTS_PANEL_OPEN` | unset | agents-panel: `1` opens `/team` and `/checklist` at start |
+| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads |
+| `DEST` | `~/.local/share/claude-agents-kit` | `release.sh`, `install.sh`: where releases go |
+| `BIN` | `~/.local/bin` | `install.sh`: where `agents` is linked |
+| `SKIP_PLUGIN_CHECKS` | unset | `release.sh`: `1` releases without `claude` on `PATH` (no validate/test) |
+
+With `AGENTS_LANG` unset, the first non-empty of `LC_ALL`, `LC_MESSAGES`,
+`LANG` decides: `ru…` means Russian, anything else English. `status --json`
+and the text the model gets are never translated.
+
+## Safety
+
+- `agents compact` and `down` type into a tmux pane only if the session status
+  is `idle` (or `shell`) **and** the input box is empty (detected on screen
+  after the `❯` prompt). Sessions outside tmux are never touched.
+- `down` reports a session as closed only once its process has exited; one
+  still running 30 s after `/exit` is reported and the exit code is 1.
+- push-guard only asks; it never pushes anything itself.
+
+## Development
+
 ### Releases: never load mods from the tree you edit
 
 Running sessions **hot-reload** a mod whenever its files change. If settings
@@ -110,50 +170,35 @@ point at your working tree, every half-finished save lands in every agent at
 once. So:
 
 - `./release.sh` refuses uncommitted and untracked files, runs
-  `claude plugin validate` and `claude plugin test` for every plugin, copies
-  the committed `bin/` and `plugins/` to
-  `~/.local/share/claude-agents-kit/releases/<sha>` and switches `current`
-  atomically. `--list`, `--rollback <sha>`.
+  `claude plugin validate` and `claude plugin test` for every plugin (and
+  refuses to run without `claude`), copies the committed `bin/` and `plugins/`
+  to `~/.local/share/claude-agents-kit/releases/<sha>` and switches `current`
+  atomically. Releasing the same commit again only switches back to it. The
+  last 5 releases are kept.
+- `./release.sh --list` shows releases, `./release.sh --rollback <sha>` goes back.
 - Settings and `~/.local/bin/agents` point at
   `~/.local/share/claude-agents-kit/current/...`, never at the repo.
 - Develop in a separate worktree (`git worktree add ../claude-agents-kit-dev -b dev`),
   merge into `main`, then release.
 
-### Tuning
-
-| variable | default | where |
-|---|---|---|
-| `MIN_CTX` | 60000 | `agents down`: skip compacting smaller contexts |
-| `OWNER_WHO` | `owner,together,you` + Russian twins | checklist: whose items wait on you |
-| `PUSH_GUARD_ASK_MIN` | 10 | push-guard: minutes to wait for your answer |
-| `AGENTS_PANEL_OPEN` | unset | agents-panel: `1` opens `/team` and `/checklist` at start |
-| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads. Unset: the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` - `ru…` means Russian, anything else English. `status --json` and the text the model gets are never translated |
-
-## Safety
-
-- `agents compact` and `down` type into a tmux pane only if the session status
-  is `idle` (or `shell`) **and** the input box is empty (detected on screen
-  after the `❯` prompt). Sessions outside tmux are never touched.
-- push-guard only asks; it never pushes anything itself.
-
-## Lessons learned
-
-- Do not decide that `/compact` has finished by looking at the screen: an old
-  `Compacted` line may still be visible. `agents compact --wait` checks the
-  transcript for a new `compact_boundary`.
-- Before restarting a session with `--resume`, compact it first — otherwise the
-  whole uncompacted tail is written to the cache again.
-- The last `usage` in a transcript overstates the context if a compaction came
-  after it.
-- Dev and release copies of `agents` share one `status.json` cache; test a mod
-  after releasing it, not from the dev tree.
-
-## Tests
+### Tests
 
 ```bash
 claude --plugin-dir plugins/agents-panel   # once, interactively: generates .claude-plugin/types
 for p in plugins/*; do claude plugin validate $p && claude plugin test $p; done
 ```
+
+### Lessons learned
+
+- Do not decide that `/compact` has finished by looking at the screen: an old
+  `Compacted` line may still be visible. `agents compact --wait` checks the
+  transcript for a new `compact_boundary`.
+- Before restarting a session with `--resume`, compact it first, otherwise the
+  whole uncompacted tail is written to the cache again.
+- The last `usage` in a transcript overstates the context if a compaction came
+  after it.
+- Dev and release copies of `agents` share one `status.json` cache; test a mod
+  after releasing it, not from the dev tree.
 
 ## Uninstall
 
@@ -165,6 +210,24 @@ Remove the two mod paths from `CLAUDE_CODE_PLUGIN_DIRS` in `settings.json`, then
 restart the sessions. `~/.local/share/claude-agents-kit/`, `~/.config/agents/`
 and `~/.local/state/agents/` can be deleted afterwards.
 
+<details>
+<summary>Upgrading from claude-cache-keeper (before October 2026)</summary>
+
+`agents`, agents-panel and push-guard used to ship inside
+[claude-cache-keeper](https://github.com/nazmang/claude-cache-keeper); this repo
+carries their history. If you installed them from there, your settings and
+`~/.local/bin/agents` still point into `~/.local/share/claude-cache-keeper/`:
+
+1. Run `install.sh` from this repo: it relinks `~/.local/bin/agents`.
+2. In `CLAUDE_CODE_PLUGIN_DIRS`, replace the `push-guard` and `agents-panel`
+   paths with the ones under `~/.local/share/claude-agents-kit/current/plugins/`.
+3. Update claude-cache-keeper too: its new releases no longer contain these mods.
+4. Restart the sessions (after `/compact`).
+
+`~/.config/agents/` and `~/.local/state/agents/` stay as they are.
+
+</details>
+
 ## License
 
-MIT
+[MIT](LICENSE)
