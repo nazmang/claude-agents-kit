@@ -636,8 +636,34 @@ def save_session_id(project, name, sid):
         f.writelines(lines)
 
 
+def live_by_row(project, rows):
+    """Live session per config row: by id, else by name and directory.
+
+    /clear starts a new session id inside the same process, so the id in the
+    config goes stale. The name (claude -n) and cwd still match; when they do,
+    the new id is written back to the config.
+    """
+    live = sessions()
+    by_sid = {s["sid"]: s for s in live}
+    found = {}
+    for r in rows:
+        name, d, sid = r[1], os.path.realpath(os.path.expanduser(r[2])), r[4]
+        s = by_sid.get(sid) if sid else None
+        if s is None:
+            same = [x for x in live if x["name"] == name and os.path.realpath(x["cwd"]) == d]
+            if len(same) == 1:
+                s = same[0]
+                if s["sid"] and s["sid"] != sid:
+                    save_session_id(project, name, s["sid"])
+                    r[4] = s["sid"]
+        if s is not None:
+            found[name] = s
+    return found
+
+
 def sessions_up(project, rows, fresh=False):
-    live = {s["sid"]: s for s in sessions()}
+    running = live_by_row(project, rows)
+    live = {s["sid"]: s for s in running.values()}
     for _, name, d, model, sid, extra in rows:
         if fresh and sid in live:
             print(f"  = {name}: " + t("running_first", project=project))
@@ -673,11 +699,8 @@ def sessions_up(project, rows, fresh=False):
 
 
 def sessions_down(project, rows, compact=True):
-    wanted = {r[4] for r in rows if r[4]}
     rc = 0
-    for s in sessions():
-        if s["sid"] not in wanted:
-            continue
+    for s in live_by_row(project, rows).values():
         if not s["target"]:
             print(f"  ! {s['name']}: " + t("close_yourself"))
             rc = 1
