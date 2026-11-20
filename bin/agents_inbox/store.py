@@ -37,10 +37,13 @@ class Question:
     last_attempt: str = ""
     notified_at: str = ""
     otok: str = ""
+    typed_at: str = ""
+    typed_sid: str = ""
 
 
 _COLS = ("id, from_, kind, blocking, title, body, options, command, ref, created, status, "
-         "answer, answered_at, delivered_at, first_attempt, last_attempt, notified_at, otok")
+         "answer, answered_at, delivered_at, first_attempt, last_attempt, notified_at, otok, "
+         "typed_at, typed_sid")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -50,8 +53,12 @@ CREATE TABLE IF NOT EXISTS questions (
   status TEXT NOT NULL DEFAULT 'open', answer TEXT NOT NULL DEFAULT '',
   answered_at TEXT NOT NULL DEFAULT '', delivered_at TEXT NOT NULL DEFAULT '',
   first_attempt TEXT NOT NULL DEFAULT '', last_attempt TEXT NOT NULL DEFAULT '',
-  notified_at TEXT NOT NULL DEFAULT '', otok TEXT NOT NULL DEFAULT ''
+  notified_at TEXT NOT NULL DEFAULT '', otok TEXT NOT NULL DEFAULT '',
+  typed_at TEXT NOT NULL DEFAULT '', typed_sid TEXT NOT NULL DEFAULT ''
 )"""
+
+# Columns added after the first release: (name, definition) for ALTER TABLE.
+_ADDED = (("typed_at", "TEXT NOT NULL DEFAULT ''"), ("typed_sid", "TEXT NOT NULL DEFAULT ''"))
 
 
 def _iso(when: datetime | None = None) -> str:
@@ -72,6 +79,10 @@ class Store:
         try:
             c.execute("PRAGMA journal_mode=WAL")
             c.execute(_SCHEMA)
+            have = {r[1] for r in c.execute("PRAGMA table_info(questions)")}
+            for name, decl in _ADDED:
+                if name not in have:
+                    c.execute(f"ALTER TABLE questions ADD COLUMN {name} {decl}")
             c.commit()
         finally:
             c.close()
@@ -98,7 +109,7 @@ class Store:
                           (prefix + "%",)).fetchone()[0] + 1
             qid = f"{prefix}{n:02d}"
             c.execute(
-                f"INSERT INTO questions ({_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,'open','','','','','','',?)",
+                f"INSERT INTO questions ({_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,'open','','','','','','',?,'','')",
                 (qid, from_, kind, int(bool(blocking)), title, body, json.dumps(list(options)),
                  command, ref, _iso(now), secrets.token_urlsafe(16)))
             c.commit()
@@ -201,6 +212,11 @@ class Store:
         self._set("UPDATE questions SET last_attempt=?, "
                   "first_attempt=CASE WHEN first_attempt='' THEN ? ELSE first_attempt END "
                   "WHERE id=?", (now, now, id))
+
+    def mark_typed(self, id: str, sid: str, when: datetime | None = None) -> None:
+        """The answer was typed into session `sid`; delivery waits for its transcript."""
+        self._set("UPDATE questions SET typed_at=?, typed_sid=? WHERE id=?",
+                  (_iso(when), sid or "", id))
 
     def pending_delivery(self) -> list:
         return self.list("answered")
