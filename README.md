@@ -124,7 +124,7 @@ answer is cached, so all sessions together recompute it at most every 5 s.
 - Checklist: one JSON per item in `~/.local/state/agents/checklist/items/`
   (`{id, data: {project, title, who, status}}`), e.g. a dump of a Claude
   artifact database. Open items (`status: todo`) whose `who` is in `OWNER_WHO`
-  (default `owner,together,you` and their Russian twins) count as waiting on you.
+  (default `owner,together,you` and their Russian and Ukrainian twins) count as waiting on you.
 
 ### A dashboard window
 
@@ -141,17 +141,27 @@ terminal UI only.
 | variable | default | what it does |
 |---|---|---|
 | `MIN_CTX` | `60000` | `agents down`: skip compacting smaller contexts |
-| `OWNER_WHO` | `owner,together,you` + Russian twins | checklist: whose items wait on you |
+| `OWNER_WHO` | `owner,together,you` + Russian and Ukrainian twins | checklist: whose items wait on you |
 | `PUSH_GUARD_ASK_MIN` | `10` | push-guard: minutes to wait for your answer |
 | `AGENTS_PANEL_OPEN` | unset | agents-panel: `1` opens `/team` and `/checklist` at start |
-| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads |
+| `AGENTS_LANG` | from locale | `en`, `ru` or `uk` for everything a person reads |
 | `DEST` | `~/.local/share/claude-agents-kit` | `release.sh`, `install.sh`: where releases go |
 | `BIN` | `~/.local/bin` | `install.sh`: where `agents` is linked |
 | `SKIP_PLUGIN_CHECKS` | unset | `release.sh`: `1` releases without `claude` on `PATH` (no validate/test) |
 
-With `AGENTS_LANG` unset, the first non-empty of `LC_ALL`, `LC_MESSAGES`,
-`LANG` decides: `ru…` means Russian, anything else English. `status --json`
-and the text the model gets are never translated.
+The interface speaks English, Russian and Ukrainian. `AGENTS_LANG` wins when it
+names one of them; otherwise the language part of the first non-empty of
+`LC_ALL`, `LC_MESSAGES`, `LANG` decides (`uk_UA.UTF-8` → `uk`, `ru_RU` → `ru`),
+and anything else (`C`, `de_DE`…) means English. `status --json` and the text
+the model gets are never translated.
+
+Adding a language: the supported languages are simply the keys of each strings
+table, so add one more entry with the same keys as `en` to `STRINGS` in
+`bin/agents` (plus its `--help` text in `DOCS`), `bin/agents_inbox/cli.py`,
+`deliver.py`, `server.py`, `plugins/agents-panel/hooks/register.jsx` and
+`plugins/push-guard/hooks/register.js`. No code changes; a key you miss falls
+back to English, and the tests check that every language has exactly the
+English keys.
 
 ## Inbox
 

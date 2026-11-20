@@ -8,7 +8,7 @@ from datetime import datetime
 
 from . import config as config_mod
 from . import deliver, tmuxlib
-from .i18n import pick_lang
+from .i18n import tr
 from .store import KINDS, AlreadyClosed, Store
 
 STRINGS = {
@@ -40,12 +40,25 @@ STRINGS = {
         "empty": "no open questions",
         "h": ("id", "from", "kind", "age", "title"),
     },
+    "uk": {
+        "no_from": "не вдалося визначити ім'я сесії (серед батьківських процесів немає tmux-вікна Claude); вкажи --from ІМ'Я",
+        "bad_from": "--from {name}: такого імені немає в sessions.conf",
+        "bad_kind": "--kind: можна {kinds}",
+        "options_kind": "--options лише для --kind decision",
+        "command_kind": "--command лише для --kind command",
+        "need_title": "потрібен заголовок питання",
+        "withdrawn": "{id}: відкликано",
+        "not_yours": "{id}: питання не твоє, відкликати не можна",
+        "unknown": "{id}: такого питання немає",
+        "closed": "{id}: питання вже закрите",
+        "empty": "відкритих питань немає",
+        "h": ("id", "від кого", "kind", "висить", "заголовок"),
+    },
 }
 
 
 def t(key, **vars):
-    v = STRINGS[pick_lang()][key]
-    return v.format(**vars) if isinstance(v, str) else v
+    return tr(STRINGS, key, **vars)
 
 
 def detect_from(pid, sessions, conf_names, ancestors=tmuxlib.ancestors):

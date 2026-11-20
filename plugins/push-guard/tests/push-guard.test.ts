@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { destBranch, findPushes, NO, STRINGS, YES } from '../hooks/register.js'
+import { chooseLang, destBranch, findPushes, NO, STRINGS, YES } from '../hooks/register.js'
 
 test('finds pushes behind cd, -C and env prefixes', async () => {
   expect(findPushes('cd repo && git push')).toEqual([{ dir: 'repo', remote: 'origin', refs: [], skip: false }])
@@ -146,4 +146,28 @@ test('AGENTS_LANG=en beats a Russian LANG', async ($, on) => {
   const s = setup(on, { 'feat/x': merged }, 'feat/x', false, NO, { AGENTS_LANG: 'en', LANG: 'ru_RU.UTF-8' })
   await $.tool.call({ tool: 'Bash', command: 'git push' })
   expect(s.asked[0]).toMatch(/is already merged into 'main'/)
+})
+
+test('a Ukrainian locale: question and log in Ukrainian, a Ukrainian "yes" lets the push run', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, STRINGS.uk.no, { LANG: 'uk_UA.UTF-8' })
+  const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(s.asked[0]).toMatch(/гілку 'feat\/x' уже злито в 'main' \(PR #71\)/)
+  expect(s.logs[0]).toMatch(/відхилено/)
+  expect(r.deny).toMatch(/the user declined the push/)
+})
+
+test('AGENTS_LANG=uk beats a Russian LANG', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, STRINGS.uk.yes, { AGENTS_LANG: 'uk', LANG: 'ru_RU.UTF-8' })
+  const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(s.asked[0]).toMatch(/Однаково пушити/)
+  expect(r.deny).toBeUndefined()
+})
+
+test('language pick and key parity', async () => {
+  expect(chooseLang('', '', '', 'uk_UA.UTF-8')).toBe('uk')
+  expect(chooseLang('de', '', '', 'ru_RU')).toBe('ru')
+  expect(chooseLang('de', '', '', '')).toBe('en')
+  expect(chooseLang('', 'C', '', 'uk_UA.UTF-8')).toBe('en')
+  const en = Object.keys(STRINGS.en).sort()
+  for (const lang of ['ru', 'uk']) expect(Object.keys(STRINGS[lang]).sort()).toEqual(en)
 })
