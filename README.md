@@ -31,6 +31,7 @@ The two work well together but do not need each other.
 | `bin/agents` | `agents status`: every live session on the machine with status, idle time, cache left, context, model and tmux window. `agents up/down`: start and stop a project's sessions in tmux. `agents messages`: messages between sessions. | Python 3, tmux |
 | `plugins/push-guard/` (**push-guard mod**) | Stops `git push` to a branch whose PR is already merged (the commits would never reach the base branch) and asks **you** in a dialog. Only your "yes" lets it run; otherwise the agent is told to start a fresh branch. There is no override the model can type itself. No answer within `PUSH_GUARD_ASK_MIN` minutes (10) counts as a refusal, so an unattended agent never hangs on the question; a desktop notification tells you an agent is waiting. Unknown repos and missing `gh` pass through. | `gh` logged in |
 | `plugins/agents-panel/` (**agents-panel mod**) | A one-line band above the prompt: who is working right now, how many sessions are idle and how many of them have a cold cache (💤), the latest message between sessions, and how many checklist items wait on you. `/team` toggles the full pane: every live session as a pixel girl or boy (`people.conf`) in the model's colour (Haiku blue, Sonnet amber, Opus purple, Fable green), what each is doing, the recent messages; click a name (or press 1–9) to jump to its tmux window. `/checklist` toggles a read-only tab with open items by project, yours first. | `bin/agents` on `PATH` |
+| `bin/agents-inbox`, `agents ask` | **Inbox**: agents queue questions for you; you answer from one web page (and ntfy pushes), and the answer is typed into the asking agent's window. See [Inbox](#inbox). | Python 3, tmux, optional ntfy |
 
 ## Quick start
 
@@ -152,6 +153,77 @@ With `AGENTS_LANG` unset, the first non-empty of `LC_ALL`, `LC_MESSAGES`,
 `LANG` decides: `ru…` means Russian, anything else English. `status --json`
 and the text the model gets are never translated.
 
+## Inbox
+
+Agents that need you (a decision, a command to run, a brainstorm, missing
+facts) do not have to wait for you to look at their window. They put the
+question in a queue with `agents ask`; you open one page, see every open
+question, and answer. The answer is typed into the asking agent's tmux window
+as one line, **only when that session is idle and its input box is empty**. A
+draft you are typing is never touched; the answer stays `pending` and is
+retried every 30 s (after 15 min the page marks it `stuck`, with no push).
+The line looks like `<owner_name> (<inbox_label>, <id>): <text>`; newlines
+become ` ⏎ `, control characters are stripped, and an answer over 2000
+characters goes to a file whose path is typed instead.
+
+```bash
+agents ask "Which cache: redis or in-process?" --options "redis,in-process"   # decision (default kind)
+agents ask "Run the migration on staging" --kind command --command "make migrate"
+agents ask "Ideas for the onboarding flow" --kind brainstorm --body "context..."
+agents ask "Which branch is the release?" --kind info-needed --blocking
+agents inbox                      # open questions (--all: closed ones too)
+agents ask --withdraw q12         # you answered in the window yourself
+```
+
+`agents ask` prints the question id. It finds the session name from the tmux
+window it runs in; from a sub-agent or a service without tmux pass `--from
+NAME` (a name from `sessions.conf`). `--blocking` marks a question that
+stops the agent's work.
+
+### Setup
+
+Copy `examples/inbox.conf` to `~/.config/agents/inbox.conf` and edit it; every
+key is commented there (`owner_name`, `inbox_label`, `listen`, `port`,
+`base_url`, `ntfy_url`, `ntfy_topic`, `ntfy_token_file`, `presence_file`,
+`away_marker`, `quiet_hours`, `data_dir`, `token_file`). Without a file the
+server listens on `127.0.0.1:8787` with pushes off.
+
+On first start the server writes a page token to `~/.config/agents/inbox.token`
+(mode 600). Open `base_url/?t=<token>` once; the server sets a cookie and
+redirects to `/`. The token stays in the browser history of that visit. To
+rotate it, delete the token file and restart the service.
+
+Run it as a systemd user unit:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp examples/agents-inbox.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agents-inbox
+```
+
+`install.sh` links `agents-inbox` into `~/.local/bin` next to `agents`.
+
+### Pushes
+
+With `ntfy_topic` set, a push goes out only for a `--blocking` question or a
+`decision`. Quiet hours (default 23:00-08:00): a blocking question is pushed
+without sound, a decision is not pushed. If `presence_file` holds
+`away_marker` and is fresh (under 15 min), you count as away; with no file,
+an empty path or a stale file you count as home. The push has the title only:
+no question body and no page token. Its buttons carry one-time tokens that
+answer that one question, once; a second tap is rejected.
+
+### Safety
+
+- The server binds only the addresses in `listen` and refuses `0.0.0.0` and
+  `::`. Put your LAN or VPN address there, not a wildcard.
+- The page and every POST need the cookie, or the one-time token of an ntfy
+  button. A query string is never logged.
+- `/api/created` (the nudge `agents ask` sends) is accepted from localhost only.
+- Delivery follows the same rule as `agents compact`: idle session, empty
+  input box, otherwise nothing is typed.
+
 ## Safety
 
 - `agents compact` and `down` type into a tmux pane only if the session status
@@ -186,6 +258,12 @@ once. So:
 ```bash
 claude --plugin-dir plugins/agents-panel   # once, interactively: generates .claude-plugin/types
 for p in plugins/*; do claude plugin validate $p && claude plugin test $p; done
+```
+
+Inbox (stdlib only, no real tmux or network touched):
+
+```bash
+python3 -m unittest discover -s tests/inbox -v
 ```
 
 ### Lessons learned
