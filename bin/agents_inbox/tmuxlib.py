@@ -6,6 +6,16 @@ SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 TAIL_BYTES = 4 * 1024 * 1024
 
+# a shell command that runs tests: the panel shows it as 🧪, not ⚙️
+TEST_RE = re.compile(r"pytest|unittest|plugin test|npm (run )?test|go test|cargo test")
+
+
+def tool_hint(name, inp):
+    """Short hint about a tool call for the panel: "test" or ""."""
+    if name in ("Bash", "PowerShell") and TEST_RE.search(str((inp or {}).get("command", ""))):
+        return "test"
+    return ""
+
 
 def tmux(*args):
     r = subprocess.run(["tmux", *args], capture_output=True, text=True)
@@ -37,17 +47,17 @@ def ancestors(pid):
 
 
 def transcript_info(sid):
-    """(time of last reply, context tokens, compacted since then, model, last tool)."""
+    """(time of last reply, context tokens, compacted since then, model, last tool, its hint)."""
     paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
     if not paths:
-        return None, 0, False, "", ""
+        return None, 0, False, "", "", ""
     p = paths[0]
     size = os.path.getsize(p)
     with open(p, "rb") as f:
         f.seek(max(0, size - TAIL_BYTES))
         lines = f.read().decode("utf-8", "replace").splitlines()
     last_ts, ctx, model, compacted_after = None, 0, "", False
-    tool = ""   # the newest assistant entry: its tool_use name, or "" for text/thinking
+    tool = hint = ""   # the newest assistant entry: its tool_use name, or "" for text/thinking
     for line in reversed(lines):
         if '"type":"assistant"' not in line:
             continue
@@ -55,8 +65,10 @@ def transcript_info(sid):
             content = (json.loads(line).get("message") or {}).get("content") or []
         except Exception:
             continue
-        uses = [c.get("name", "") for c in content if isinstance(c, dict) and c.get("type") == "tool_use"]
-        tool = uses[-1] if uses else ""
+        uses = [c for c in content if isinstance(c, dict) and c.get("type") == "tool_use"]
+        if uses:
+            tool = uses[-1].get("name", "")
+            hint = tool_hint(tool, uses[-1].get("input"))
         break
     for line in reversed(lines):
         if '"compact_boundary"' in line and last_ts is None and not compacted_after:
@@ -82,7 +94,7 @@ def transcript_info(sid):
                                         "cache_creation_input_tokens"))
         model = msg.get("model", "")
         break
-    return last_ts, ctx, compacted_after, model, tool
+    return last_ts, ctx, compacted_after, model, tool, hint
 
 
 def sessions():
@@ -101,7 +113,7 @@ def sessions():
             if a in panes:
                 target, label = panes[a]
                 break
-        last, ctx, compacted, model, tool = transcript_info(d.get("sessionId", ""))
+        last, ctx, compacted, model, tool, hint = transcript_info(d.get("sessionId", ""))
         try:  # --model on the command line wins: right after a restart there are no replies yet
             argv = open(f"/proc/{pid}/cmdline", "rb").read().decode().split("\0")
             if "--model" in argv:
@@ -111,7 +123,8 @@ def sessions():
         idle = (datetime.now(timezone.utc) - last).total_seconds() / 60 if last else None
         out.append(dict(name=d.get("name") or f"(pid {pid})", pid=pid, sid=d.get("sessionId"),
                         cwd=d.get("cwd", ""), status=d.get("status", ""), target=target,
-                        label=label, idle=idle, ctx=0 if compacted else ctx, model=model, tool=tool))
+                        label=label, idle=idle, ctx=0 if compacted else ctx, model=model, tool=tool,
+                        tool_hint=hint))
     return sorted(out, key=lambda s: (s["label"] or "~", s["name"]))
 
 
