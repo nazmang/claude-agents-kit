@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { setLang, projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { chooseLang, STRINGS, t, setLang, projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -136,4 +136,58 @@ test('pure helpers speak Russian after setLang', async () => {
     expect(projectLabel({ name: 'P', todo: 2, later: 1, done: 5, waiting: 1 } as never)).toBe('P  2 открыто · 1 тебе · 1 на потом')
     expect(bandLine([{ display: 'Rita', gender: 'f', status: 'idle', cache_min: -1 }] as never[], 0)).toBe('⏳ никого · 1 ждут (1 💤)')
   } finally { setLang('en') }
+})
+
+test('the same under a Ukrainian locale', async ($, on) => {
+  setupUi(on, { LANG: 'uk_UA.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const band = await $.ui.mount({ plugin: 'agents-panel', surface: 'terminal', ...PROPS.band } as never)
+  expect(await band.find({ type: 'Text', text: /чекають на тебе: 1/ })).toBeDefined()
+  await band.unmount()
+  const team = await $.ui.mount({ plugin: 'agents-panel', surface: 'terminal', ...PROPS.team } as never)
+  expect(await team.find({ type: 'Text', text: /1 працюють · 0 чекають · 1 сплять/ })).toBeDefined()
+  await team.unmount()
+  setLang('en')
+})
+
+test('AGENTS_LANG=uk beats a Russian locale', async ($, on) => {
+  setupUi(on, { AGENTS_LANG: 'uk', LANG: 'ru_RU.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const cl = await $.ui.mount({ plugin: 'agents-panel', surface: 'terminal', ...PROPS.checklist } as never)
+  expect(await cl.find({ type: 'Text', text: /3 відкрито · 1 чекають на тебе/ })).toBeDefined()
+  await cl.unmount()
+  setLang('en')
+})
+
+test('language pick: keys of STRINGS, locale language part, English otherwise', async () => {
+  expect(chooseLang('', '', '', 'uk_UA.UTF-8')).toBe('uk')
+  expect(chooseLang('', '', '', 'ru_RU')).toBe('ru')
+  expect(chooseLang('uk', '', '', 'ru_RU.UTF-8')).toBe('uk')
+  expect(chooseLang(' UK ', undefined, undefined, undefined)).toBe('uk')
+  expect(chooseLang('de', '', '', 'uk_UA.UTF-8')).toBe('uk')
+  expect(chooseLang('de', '', '', '')).toBe('en')
+  expect(chooseLang('', 'C', '', 'uk_UA.UTF-8')).toBe('en')
+  expect(chooseLang('', '', 'uk_UA.UTF-8', 'ru_RU.UTF-8')).toBe('uk')
+  expect(chooseLang('', '', '', 'de_DE.UTF-8')).toBe('en')
+  expect(chooseLang(undefined, undefined, undefined, undefined)).toBe('en')
+})
+
+test('every language has exactly the English keys and placeholders', async () => {
+  const en = Object.keys(STRINGS.en).sort()
+  const ph = (s: string) => (s.match(/\{\w+\}/g) ?? []).sort().join(',')
+  for (const lang of ['ru', 'uk']) {
+    expect(Object.keys(STRINGS[lang]).sort()).toEqual(en)
+    for (const k of en) expect(`${lang}.${k}:${ph(STRINGS[lang][k])}`).toBe(`${lang}.${k}:${ph(STRINGS.en[k])}`)
+  }
+})
+
+test('a key missing in a language falls back to English; unknown language is English', async () => {
+  setLang('uk')
+  try {
+    delete STRINGS.uk.nobody
+    expect(t('nobody')).toBe('nobody')
+    expect(t('tab_team')).toBe('Команда')
+  } finally { STRINGS.uk.nobody = 'нікого'; setLang('en') }
+  setLang('de')
+  expect(t('tab_team')).toBe('Team')
 })

@@ -24,20 +24,27 @@ let agentsBin = 'agents'
 let expanded = ''        // the project opened in the checklist tab
 
 // --- language ---------------------------------------------------------------
-// AGENTS_LANG (ru|en) wins; otherwise the first non-empty of LC_ALL,
-// LC_MESSAGES, LANG: "ru..." is Russian, anything else English. Picked once,
-// when the session starts. `agents status --json` stays language-neutral.
+// The languages are the keys of STRINGS: AGENTS_LANG wins if it is one of
+// them; otherwise the language part of the first non-empty of LC_ALL,
+// LC_MESSAGES, LANG (uk_UA.UTF-8 -> uk); anything else is English. A language
+// is one more entry in STRINGS; a key it lacks falls back to English. Picked
+// once, when the session starts. `agents status --json` stays language-neutral.
 let LANG = 'en'
-export function setLang(l) { LANG = l === 'ru' ? 'ru' : 'en' }
+export function setLang(l) { LANG = Object.hasOwn(STRINGS, l) ? l : 'en' }
+
+// Pure part of the pick, for tests: `locales` are LC_ALL, LC_MESSAGES, LANG.
+export function chooseLang(forced, ...locales) {
+  const f = String(forced ?? '').trim().toLowerCase()
+  if (Object.hasOwn(STRINGS, f)) return f
+  const loc = locales.map((v) => String(v ?? '').trim()).find((v) => v) ?? ''
+  const code = loc.toLowerCase().split(/[_.@-]/)[0]
+  return Object.hasOwn(STRINGS, code) ? code : 'en'
+}
 
 async function pickLang($) {
   // $.env.get wants a literal name: the mod's variables must be listable
-  const forced = String((await $.env.get('AGENTS_LANG')) ?? '').trim().toLowerCase()
-  if (forced === 'ru' || forced === 'en') return forced
-  const loc = String((await $.env.get('LC_ALL')) ?? '').trim() ||
-    String((await $.env.get('LC_MESSAGES')) ?? '').trim() ||
-    String((await $.env.get('LANG')) ?? '').trim()
-  return /^ru/i.test(loc) ? 'ru' : 'en'
+  return chooseLang(await $.env.get('AGENTS_LANG'), await $.env.get('LC_ALL'),
+    await $.env.get('LC_MESSAGES'), await $.env.get('LANG'))
 }
 
 export const STRINGS = {
@@ -105,10 +112,42 @@ export const STRINGS = {
     tmux_failed: 'tmux не сработал',
     messages: 'Сообщения за 6 ч ({n} разбудили остывший кэш)',
   },
+  uk: {
+    cmd_team: 'Відкрити або закрити панель: усі живі агенти на цій машині й що чекає на тебе',
+    cmd_checklist: 'Відкрити або закрити вкладку чек-листа: відкриті пункти за проєктами, твої зверху',
+    tab_team: 'Команда',
+    tab_checklist: 'Чек-лист',
+    not_placed: '{id}: {why}',
+    pane_not_placed: 'панель не стала на місце',
+    loading: 'завантаження…',
+    band_loading: 'agents-panel: завантаження…',
+    band_error: 'agents-panel: {err}',
+    agents_failed: 'agents не спрацював',
+    bad_json: 'agents: кривий JSON',
+    nobody: 'нікого',
+    band_idle: '{n} чекають ({a} 💤)',
+    band_waiting: 'чекають на тебе: {n}',
+    cold_wake: ' розбудив холодний кеш',
+    no_snapshot: 'чек-лист: знімка ще немає',
+    waiting_line: 'чекають на тебе: {w} · відкрито: {o} · знімок {at}',
+    headline: '{b} працюють · {w} чекають · {a} сплять',
+    off: 'холодний',
+    h: 'год',
+    m: 'хв',
+    open_n: '{n} відкрито',
+    you_n: ' · {n} тобі',
+    later_n: ' · {n} на потім',
+    cl_head: '{o} відкрито · {w} чекають на тебе · знімок {at}',
+    cl_readonly: 'редагуй на сторінці чек-листа або попроси агента; вкладка лише для читання',
+    cl_none: 'знімка чек-листа ще немає',
+    not_in_tmux: '{name}: не в tmux',
+    tmux_failed: 'tmux не спрацював',
+    messages: 'Повідомлення за 6 год ({n} розбудили холодний кеш)',
+  },
 }
 
 export function t(key, vars = {}) {
-  const tpl = STRINGS[LANG][key] ?? STRINGS.en[key] ?? key
+  const tpl = STRINGS[LANG]?.[key] ?? STRINGS.en[key] ?? key
   return tpl.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
 }
 

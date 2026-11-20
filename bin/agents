@@ -58,12 +58,13 @@ Checklist snapshot: ~/.local/state/agents/checklist/items/*.json, one JSON per i
   database dump; "waiting on you" = open items whose `who` is in OWNER_WHO.
 Log: ~/.local/state/agents/compact.log
 Env: MIN_CTX (tokens; down skips compacting smaller contexts).
+Language: AGENTS_LANG=en|ru|uk, else by LC_ALL / LC_MESSAGES / LANG.
 """
 import json, os, re, shlex, subprocess, sys, time, glob, uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from agents_inbox.i18n import pick_lang  # noqa: E402
+from agents_inbox.i18n import pick_lang, strings_for  # noqa: E402
 from agents_inbox.tmuxlib import PROJECTS_DIR, TAIL_BYTES, input_empty, sessions, tmux  # noqa: E402
 
 CONF = os.path.expanduser("~/.config/agents/projects.conf")
@@ -71,19 +72,20 @@ SESS_CONF = os.path.expanduser("~/.config/agents/sessions.conf")
 PEOPLE_CONF = os.path.expanduser("~/.config/agents/people.conf")
 CHECKLIST_DIR = os.path.expanduser("~/.local/state/agents/checklist/items")
 STATUS_CACHE = os.path.expanduser("~/.local/state/agents/status.json")
-OWNER_WHO = set(os.environ.get("OWNER_WHO", "владелец,вместе,ты,owner,together,you").split(","))
+OWNER_WHO = set(os.environ.get("OWNER_WHO", "владелец,вместе,ты,власник,разом,ти,owner,together,you").split(","))
 LOG = os.path.expanduser("~/.local/state/agents/compact.log")
 CACHE_TTL = 60
 MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
 
 
 # --- language ---------------------------------------------------------------
-# AGENTS_LANG (ru|en) wins; otherwise the first non-empty of LC_ALL,
-# LC_MESSAGES, LANG: "ru..." is Russian, anything else English.
+# The languages are the keys of STRINGS (see agents_inbox/i18n.py): AGENTS_LANG
+# wins if it is one of them; otherwise the language part of the first non-empty
+# of LC_ALL, LC_MESSAGES, LANG (uk_UA.UTF-8 -> uk); anything else is English.
+# A language is one more dict in STRINGS (and in DOCS for --help); a key it
+# lacks falls back to English.
 # Only text a person reads is translated: not `status --json`, not what is
 # typed into tmux windows (/compact, /exit), not what is looked for on screen.
-LANG = pick_lang()
-
 STRINGS = {
     "en": {
         "h_session": "session", "h_status": "status", "h_idle": "idle", "h_cache": "cache",
@@ -135,11 +137,38 @@ STRINGS = {
         "st_idle": "ждёт", "st_busy": "занят", "st_shell": "фон",
         "closed_session": "(закрытая сессия)",
     },
+    "uk": {
+        "h_session": "сесія", "h_status": "статус", "h_idle": "простій", "h_cache": "кеш",
+        "h_context": "контекст", "h_model": "модель / вікно", "unit_m": "хв",
+        "expired": "сплив", "compact": "стиснуто", "no_tmux": "не в tmux",
+        "not_in_tmux": "не в tmux", "draft": "у полі введення чернетка",
+        "status_is": "статус {status}",
+        "sent_compact": "/compact ({k}k, простій {idle:.0f} хв, {label})",
+        "done_compacted": "стиснуто",
+        "done_nothing": "стискати нічого (Not enough messages)",
+        "fail_compact": "стиснення не завершилося за 10 хв",
+        "no_session": "немає живої сесії '{name}'",
+        "closed_cold": "закрита (id для відновлення {sid})",
+        "running_first": "працює - спершу `agents down {project}`",
+        "already_running": "уже працює (pid {pid}, {where})",
+        "started": "запущена в tmux {project}:{name} ({how})",
+        "how_resume": "відновлення {sid}", "how_new": "нова {sid}",
+        "close_yourself": "не в tmux - закрий вручну (/compact, потім /exit)",
+        "not_closed": "не закрита: стиснення не вдалося або сесія зайнята",
+        "still_running": "надіслано /exit, але процес {pid} досі працює через 30 с",
+        "bad_number": "{opt}: потрібне число",
+        "busy_skipped": "зайнята або в полі введення чернетка - пропущена",
+        "no_project": "немає проєкту '{name}' ні в {conf}, ні в {sess}",
+        "st_idle": "чекає", "st_busy": "зайнята", "st_shell": "фон",
+        "closed_session": "(закрита сесія)",
+    },
 }
+LANG = pick_lang(STRINGS)
+TEXT = strings_for(STRINGS, LANG)
 
 
 def t(key, **vars):
-    return STRINGS[LANG].get(key, STRINGS["en"].get(key, key)).format(**vars)
+    return TEXT.get(key, key).format(**vars)
 
 
 DOC_RU = """agents - живые сессии Claude Code на этой машине: статус, сообщения, up/down.
@@ -200,8 +229,71 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
   артефакта; "ждёт тебя" = открытые пункты, у которых `who` из OWNER_WHO.
 Лог: ~/.local/state/agents/compact.log
 Окружение: MIN_CTX (токены; down не сжимает контекст меньше).
-Язык: AGENTS_LANG=ru|en, иначе по LC_ALL / LC_MESSAGES / LANG.
+Язык: AGENTS_LANG=en|ru|uk, иначе по LC_ALL / LC_MESSAGES / LANG.
 """
+
+DOC_UK = """agents - живі сесії Claude Code на цій машині: статус, повідомлення, up/down.
+
+  agents status [--json [--max-age S]]
+                                усі живі сесії: статус, простій, скільки ще
+                                живе кеш, контекст, модель, вікно tmux. --json
+                                додає людей (people.conf) і підсумок чек-листа;
+                                з --max-age відповідь, молодша за S секунд,
+                                береться з кешу (мод agents-panel опитує саме так)
+  agents messages [--hours H]   повідомлення між сесіями (SendMessage) за
+                                останні H годин (типово 6); ❄ - повідомлення
+                                розбудило адресата з уже холодним кешем
+  agents compact <ім'я> [--wait]
+                                стиснути одну сесію зараз, якщо вона в tmux,
+                                простоює і поле введення порожнє; --wait - чекати
+                                завершення (код 0 = готово)
+  agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
+             [--ref R] [--from ІМ'Я] "заголовок"
+                                поставити питання власнику (kind: decision, command,
+                                brainstorm, info-needed); друкує id. ІМ'Я
+                                визначається за вікном tmux, інакше вкажи --from
+                                (ім'я з sessions.conf). Відповідь друкується назад
+                                у вікно того, хто питав
+  agents ask --withdraw ID      відкликати своє відкрите питання
+  agents inbox [--all]          відкриті питання (--all - усі статуси); ! = блокує
+  agents up <проєкт> [ім'я...]  підняти сесії проєкту в tmux
+  agents down <проєкт> [ім'я...] [--no-compact]
+                                стиснути й закрити (--no-compact: просто закрити,
+                                наприклад перед чистим стартом через up --fresh)
+
+Проєкти беруться з двох файлів:
+  ~/.config/agents/projects.conf  "проєкт | каталог | команда up | команда down" -
+                                  команда зі своїми скриптами запуску й зупинки;
+                                  імена передаються їм аргументами
+  ~/.config/agents/sessions.conf  "проєкт | ім'я | каталог | модель | id сесії [| дод. аргументи]" -
+                                  звичайні сесії, по рядку на кожну. `up` відкриває
+                                  кожну в tmux-сесії <проєкт>, вікно <ім'я>, через
+                                  `claude -n <ім'я> --resume <id>`. Порожня модель =
+                                  твоя типова. Порожній id = нова сесія; її id
+                                  записується назад, і наступний `up` її продовжить.
+                                  Уже запущену сесію (у tmux чи ні) не чіпаємо.
+                                  `down` закриває лише сесії, що простоюють, з
+                                  порожнім полем введення, перед цим стиснувши їх.
+                                  `up --fresh` ігнорує збережений id і
+                                  починає нову сесію (чистий старт уночі);
+                                  дод. аргументи йдуть у claude як є (наприклад
+                                  --remote-control Duty "start the shift").
+
+Навіщо стискати перед закриттям: кеш промпту живе годину від останнього запиту.
+Сесія, відновлена пізніше, знову пише весь контекст у кеш за повною ціною;
+стиснута — лише короткий підсумок. Стиснення за простоєм живе в claude-cache-keeper.
+
+Люди: ~/.config/agents/people.conf, "ім'я сесії | ім'я для показу | f|m|-|x"
+  (x = сховати сесію, наприклад вікно-дашборд).
+Знімок чек-листа: ~/.local/state/agents/checklist/items/*.json, по JSON на пункт
+  ({id, data: {project, title, who, status, ...}}), як пише вивантаження бази
+  артефакту; "чекає на тебе" = відкриті пункти, у яких `who` з OWNER_WHO.
+Лог: ~/.local/state/agents/compact.log
+Оточення: MIN_CTX (токени; down не стискає менший контекст).
+Мова: AGENTS_LANG=en|ru|uk, інакше за LC_ALL / LC_MESSAGES / LANG.
+"""
+
+DOCS = {"en": __doc__, "ru": DOC_RU, "uk": DOC_UK}
 
 
 # "shell": the turn is over but a background command (Monitor, a server) runs.
@@ -245,7 +337,7 @@ def cmd_status():
             left = CACHE_TTL - s["idle"]
             cache = f"{left:.0f}{t('unit_m')}" if left > 0 else t("expired")
         ctx = f"{s['ctx']//1000}k" if s["ctx"] else t("compact")
-        status = STRINGS[LANG].get("st_" + s["status"], s["status"])
+        status = TEXT.get("st_" + s["status"], s["status"])
         model = s["model"].replace("claude-", "")
         print(f"{s['name'][:28]:28} {status:7} {idle:>8} {cache:>7} {ctx:>9}  {model} / {s['label'] or t('no_tmux')}")
 
@@ -658,7 +750,7 @@ def opt_number(argv, opt, default):
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print(DOC_RU if LANG == "ru" else __doc__); return 0
+        print(DOCS.get(LANG, __doc__)); return 0
     c = argv[0]
     if c in ("ask", "inbox"):
         from agents_inbox import cli
@@ -674,7 +766,7 @@ def main(argv):
     elif c in ("up", "down") and len(argv) >= 2:
         return cmd_updown(c, argv[1], argv[2:])
     else:
-        print(DOC_RU if LANG == "ru" else __doc__); return 1
+        print(DOCS.get(LANG, __doc__)); return 1
     return 0
 
 

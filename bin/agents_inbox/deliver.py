@@ -10,7 +10,7 @@ import re
 import time
 
 from . import tmuxlib
-from .i18n import pick_lang
+from .i18n import tr
 
 IDLE_STATES = ("idle", "shell")
 MAX_INLINE = 2000
@@ -21,11 +21,12 @@ TRANSCRIPT_TAIL = 1024 * 1024
 STRINGS = {
     "ru": {"long_answer": "ответ в файле {path}"},
     "en": {"long_answer": "answer in file {path}"},
+    "uk": {"long_answer": "відповідь у файлі {path}"},
 }
 
 
 def t(key, **vars):
-    return STRINGS[pick_lang()][key].format(**vars)
+    return tr(STRINGS, key, **vars)
 
 
 class TmuxOps:

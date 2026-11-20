@@ -142,18 +142,25 @@ export const ASK_MIN_DEFAULT = 10
 
 // --- language --------------------------------------------------------------
 // What the PERSON reads (the question, the notification, the log) follows the
-// locale; the refusal text the MODEL gets stays English. AGENTS_LANG (ru|en)
-// wins; otherwise the first non-empty of LC_ALL, LC_MESSAGES, LANG: "ru..." is
-// Russian, anything else English. This mod has no session.start hook, and a
-// question is rare, so the language is picked when the question is asked.
+// locale; the refusal text the MODEL gets stays English. The languages are the
+// keys of STRINGS: AGENTS_LANG wins if it is one of them; otherwise the
+// language part of the first non-empty of LC_ALL, LC_MESSAGES, LANG
+// (uk_UA.UTF-8 -> uk); anything else is English. A language is one more entry
+// in STRINGS; a key it lacks falls back to English. This mod has no
+// session.start hook, and a question is rare, so the language is picked when
+// the question is asked.
+export function chooseLang(forced, ...locales) {
+  const f = String(forced ?? '').trim().toLowerCase()
+  if (Object.hasOwn(STRINGS, f)) return f
+  const loc = locales.map((v) => String(v ?? '').trim()).find((v) => v) ?? ''
+  const code = loc.toLowerCase().split(/[_.@-]/)[0]
+  return Object.hasOwn(STRINGS, code) ? code : 'en'
+}
+
 async function pickLang($) {
   // $.env.get wants a literal name: the mod's variables must be listable
-  const forced = String((await $.env.get('AGENTS_LANG')) ?? '').trim().toLowerCase()
-  if (forced === 'ru' || forced === 'en') return forced
-  const loc = String((await $.env.get('LC_ALL')) ?? '').trim() ||
-    String((await $.env.get('LC_MESSAGES')) ?? '').trim() ||
-    String((await $.env.get('LANG')) ?? '').trim()
-  return /^ru/i.test(loc) ? 'ru' : 'en'
+  return chooseLang(await $.env.get('AGENTS_LANG'), await $.env.get('LC_ALL'),
+    await $.env.get('LC_MESSAGES'), await $.env.get('LANG'))
 }
 
 export const STRINGS = {
@@ -175,12 +182,21 @@ export const STRINGS = {
     log_allowed: "пуш в влитую ветку '{branch}' разрешён тобой",
     log_refused: "пуш в влитую ветку '{branch}' отклонён",
   },
+  uk: {
+    question: "push-guard: гілку '{branch}' уже злито в '{base}' (PR #{pr}). Однаково пушити?",
+    notify_title: 'Агент чекає на тебе',
+    yes: 'Так, однаково пушити',
+    no: 'Ні, не пушити',
+    log_timeout: "пуш у злиту гілку '{branch}' відхилено: за {min} хв відповіді немає; питання на екрані вже нічого не робить (закрий його Esc)",
+    log_allowed: "пуш у злиту гілку '{branch}' дозволено тобою",
+    log_refused: "пуш у злиту гілку '{branch}' відхилено",
+  },
 }
 export const YES = STRINGS.en.yes
 export const NO = STRINGS.en.no
 
 function tr(lang, key, vars = {}) {
-  const tpl = STRINGS[lang][key] ?? STRINGS.en[key] ?? key
+  const tpl = STRINGS[lang]?.[key] ?? STRINGS.en[key] ?? key
   return tpl.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
 }
 

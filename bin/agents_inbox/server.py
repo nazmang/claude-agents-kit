@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import config as config_mod
 from . import deliver, notify
-from .i18n import pick_lang
+from .i18n import pick_lang, strings_for
 from .store import AlreadyClosed, Store
 
 DELIVER_EVERY = 30
@@ -61,11 +61,22 @@ STRINGS = {
         "accepted": "Accepted", "accepted_text": "The answer is recorded. You can close this page.",
         "replay": "Already answered", "unauth": "Open the link with the token.",
     },
+    "uk": {
+        "title": "Вхідні агентів", "urgent": "Терміново", "decisions": "Рішення",
+        "commands": "Команди", "talk": "Обговорити", "closed": "Закрито за 7 днів",
+        "empty": "Питань немає", "own": "Своя відповідь", "send": "Надіслати",
+        "copy": "Скопіювати", "copied": "Скопійовано", "details": "Докладніше",
+        "waiting": "чекає на доставку", "stuck": "застрягло > 15 хв", "delivered": "доставлено",
+        "withdrawn": "відкликано", "answered": "відповідь", "error": "Помилка", "closed_now": "Уже закрито",
+        "offline": "Немає зв'язку з сервером", "ago_m": "{n} хв", "ago_h": "{n} год", "ago_d": "{n} дн",
+        "accepted": "Прийнято", "accepted_text": "Відповідь записано. Вікно можна закрити.",
+        "replay": "Уже відповіли", "unauth": "Потрібне посилання з токеном.",
+    },
 }
 
 
 def strings():
-    return STRINGS[pick_lang()]
+    return strings_for(STRINGS)
 
 
 def _log_stderr(line):
@@ -307,13 +318,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, _mini(s["accepted"], s["accepted_text"]), "text/html; charset=utf-8")
 
     def _page(self):
-        lang = pick_lang()
+        lang = pick_lang(STRINGS)
+        s = strings_for(STRINGS, lang)
         with open(PAGE_FILE, encoding="utf-8") as f:
             html = f.read()
         nonce = secrets.token_urlsafe(12)
-        data = json.dumps(STRINGS[lang], ensure_ascii=False).replace("</", "<\\/")
+        data = json.dumps(s, ensure_ascii=False).replace("</", "<\\/")
         html = (html.replace("/*STRINGS*/null", data).replace("{{lang}}", lang)
-                .replace("{{nonce}}", nonce).replace("{{title}}", STRINGS[lang]["title"]))
+                .replace("{{nonce}}", nonce).replace("{{title}}", s["title"]))
         csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
                "connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; "
                "frame-ancestors 'none'")

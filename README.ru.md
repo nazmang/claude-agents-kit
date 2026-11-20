@@ -121,7 +121,7 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 - Чек-лист: по JSON на пункт в `~/.local/state/agents/checklist/items/`
   (`{id, data: {project, title, who, status}}`) — например, выгрузка базы
   артефакта Claude. Открытые (`status: todo`), у которых `who` из `OWNER_WHO`
-  (по умолчанию `owner,together,you` и русские близнецы), считаются ждущими тебя.
+  (по умолчанию `owner,together,you` и русские и украинские близнецы), считаются ждущими тебя.
 
 ### Окно-табло
 
@@ -138,17 +138,26 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 | переменная | по умолчанию | что делает |
 |---|---|---|
 | `MIN_CTX` | `60000` | `agents down`: контекст меньше не сжимать |
-| `OWNER_WHO` | `owner,together,you` + русские близнецы | чек-лист: чьи пункты ждут тебя |
+| `OWNER_WHO` | `owner,together,you` + русские и украинские близнецы | чек-лист: чьи пункты ждут тебя |
 | `PUSH_GUARD_ASK_MIN` | `10` | push-guard: сколько минут ждать твоего ответа |
 | `AGENTS_PANEL_OPEN` | не задана | agents-panel: `1` открывает `/team` и `/checklist` при старте |
-| `AGENTS_LANG` | по локали | `ru` или `en` для всего, что читает человек |
+| `AGENTS_LANG` | по локали | `en`, `ru` или `uk` для всего, что читает человек |
 | `DEST` | `~/.local/share/claude-agents-kit` | `release.sh`, `install.sh`: куда кладутся релизы |
 | `BIN` | `~/.local/bin` | `install.sh`: куда ставится ссылка `agents` |
 | `SKIP_PLUGIN_CHECKS` | не задана | `release.sh`: `1` — выпустить без `claude` в `PATH` (без validate/test) |
 
-Если `AGENTS_LANG` не задан, решает первое непустое из `LC_ALL`, `LC_MESSAGES`,
-`LANG`: начинается с `ru` — по-русски, иначе по-английски. `status --json` и
+Интерфейс говорит по-английски, по-русски и по-украински. `AGENTS_LANG`
+побеждает, если называет один из этих языков; иначе решает языковая часть
+первого непустого из `LC_ALL`, `LC_MESSAGES`, `LANG` (`uk_UA.UTF-8` → `uk`,
+`ru_RU` → `ru`), а всё остальное (`C`, `de_DE`…) — английский. `status --json` и
 текст, который получает модель, не переводятся.
+
+Как добавить язык: поддерживаемые языки — это просто ключи таблиц строк, так что
+добавь ещё одну запись с теми же ключами, что у `en`, в `STRINGS` в `bin/agents`
+(и текст `--help` в `DOCS`), `bin/agents_inbox/cli.py`, `deliver.py`, `server.py`,
+`plugins/agents-panel/hooks/register.jsx` и `plugins/push-guard/hooks/register.js`.
+Код менять не нужно; пропущенный ключ берётся из английского, а тесты проверяют,
+что у каждого языка ровно те же ключи, что у английского.
 
 ## Очередь вопросов (inbox)
 
