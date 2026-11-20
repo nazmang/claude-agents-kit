@@ -244,7 +244,7 @@ export function bandLine(sessions, frameNo) {
   const busy = sessions.filter((s) => s.status === 'busy' || s.status === 'waiting')
   const asleep = sessions.filter((s) => s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0).length
   const who = busy.length
-    ? busy.map((s) => `${toolGlyph(s)}${s.display}`).join(' ')
+    ? busy.map((s) => `${toolGlyph(s)} ${s.display}`).join(' ')
     : t('nobody')
   return `${frameNo % 2 ? '⌛' : '⏳'} ${who} · ${t('band_idle', { n: sessions.length - busy.length, a: asleep })}`
 }
