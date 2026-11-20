@@ -14,6 +14,15 @@
                                 compact one session now if it runs in tmux, is
                                 idle and has an empty input box; --wait - wait
                                 until done (exit 0 = done)
+  agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
+             [--ref R] [--from NAME] "title"
+                                put a question to the owner (kinds: decision,
+                                command, brainstorm, info-needed); prints its id.
+                                NAME is found from the tmux window, or pass --from
+                                (must be listed in sessions.conf). The answer is
+                                typed back into the asking window
+  agents ask --withdraw ID      withdraw your own open question
+  agents inbox [--all]          open questions (all statuses with --all); ! = blocking
   agents up <project> [name...]   start a project's sessions in tmux
   agents down <project> [name...] [--no-compact]
                                 compact and close them (--no-compact: just close,
@@ -54,6 +63,7 @@ import json, os, re, shlex, subprocess, sys, time, glob, uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from agents_inbox.i18n import pick_lang  # noqa: E402
 from agents_inbox.tmuxlib import PROJECTS_DIR, TAIL_BYTES, input_empty, sessions, tmux  # noqa: E402
 
 CONF = os.path.expanduser("~/.config/agents/projects.conf")
@@ -72,17 +82,6 @@ MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
 # LC_MESSAGES, LANG: "ru..." is Russian, anything else English.
 # Only text a person reads is translated: not `status --json`, not what is
 # typed into tmux windows (/compact, /exit), not what is looked for on screen.
-def pick_lang():
-    forced = os.environ.get("AGENTS_LANG", "").strip().lower()
-    if forced in ("ru", "en"):
-        return forced
-    for k in ("LC_ALL", "LC_MESSAGES", "LANG"):
-        v = os.environ.get(k, "").strip()
-        if v:
-            return "ru" if v.lower().startswith("ru") else "en"
-    return "en"
-
-
 LANG = pick_lang()
 
 STRINGS = {
@@ -158,6 +157,15 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
                                 сжать одну сессию сейчас, если она в tmux,
                                 простаивает и поле ввода пустое; --wait - ждать
                                 конца (код 0 = готово)
+  agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
+             [--ref R] [--from ИМЯ] "заголовок"
+                                задать вопрос владельцу (kind: decision, command,
+                                brainstorm, info-needed); печатает id. ИМЯ
+                                определяется по окну tmux, иначе укажи --from
+                                (имя из sessions.conf). Ответ печатается обратно
+                                в окно спросившего
+  agents ask --withdraw ID      отозвать свой открытый вопрос
+  agents inbox [--all]          открытые вопросы (--all - все статусы); ! = блокирует
   agents up <проект> [имя...]   поднять сессии проекта в tmux
   agents down <проект> [имя...] [--no-compact]
                                 сжать и закрыть (--no-compact: просто закрыть,
@@ -652,6 +660,9 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(DOC_RU if LANG == "ru" else __doc__); return 0
     c = argv[0]
+    if c in ("ask", "inbox"):
+        from agents_inbox import cli
+        return cli.main(argv)
     if c == "status" and "--json" in argv:
         cmd_status_json(opt_number(argv, "--max-age", 0))
     elif c == "status":

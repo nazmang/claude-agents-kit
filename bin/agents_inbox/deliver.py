@@ -8,6 +8,7 @@ import re
 import time
 
 from . import tmuxlib
+from .i18n import pick_lang
 
 IDLE_STATES = ("idle", "shell")
 MAX_INLINE = 2000
@@ -17,17 +18,6 @@ STRINGS = {
     "ru": {"long_answer": "ответ в файле {path}"},
     "en": {"long_answer": "answer in file {path}"},
 }
-
-
-def pick_lang():
-    forced = os.environ.get("AGENTS_LANG", "").strip().lower()
-    if forced in ("ru", "en"):
-        return forced
-    for k in ("LC_ALL", "LC_MESSAGES", "LANG"):
-        v = os.environ.get(k, "").strip()
-        if v:
-            return "ru" if v.lower().startswith("ru") else "en"
-    return "en"
 
 
 def t(key, **vars):
@@ -94,19 +84,29 @@ def conf_path_default() -> str:
     return os.environ.get("AGENTS_SESSIONS_CONF") or os.path.expanduser("~/.config/agents/sessions.conf")
 
 
-def conf_sid(name, path=None):
-    """Session id of `name` in sessions.conf (project | name | dir | model | session id ...)."""
+def conf_rows(path=None):
+    """Rows of sessions.conf (project | name | dir | model | session id ...) as lists."""
+    rows = []
     try:
         with open(path or conf_path_default(), encoding="utf-8") as f:
             for line in f:
                 line = line.split("#", 1)[0].strip()
-                if not line:
-                    continue
-                p = [x.strip() for x in line.split("|")]
-                if len(p) >= 5 and p[1] == name:
-                    return p[4] or None
+                if line:
+                    rows.append([x.strip() for x in line.split("|")])
     except OSError:
         pass
+    return rows
+
+
+def conf_names(path=None) -> set:
+    return {p[1] for p in conf_rows(path) if len(p) >= 2 and p[1]}
+
+
+def conf_sid(name, path=None):
+    """Session id of `name` in sessions.conf."""
+    for p in conf_rows(path):
+        if len(p) >= 5 and p[1] == name:
+            return p[4] or None
     return None
 
 
