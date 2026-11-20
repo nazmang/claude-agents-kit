@@ -63,7 +63,7 @@ test('band is one short line; dashboards are hidden', async () => {
     { display: 'Panel', gender: 'x', status: 'idle', cache_min: 40 },
   ] as never[]
   expect(visible(ss).length).toBe(2)
-  expect(bandLine(visible(ss), 0)).toBe('⏳ 💭Rita · 1 idle (1 💤)')
+  expect(bandLine(visible(ss), 0)).toBe('⏳ 💭 Rita · 1 idle (1 💤)')
 })
 
 test('tool glyphs: what each busy session does', async () => {
@@ -87,7 +87,7 @@ test('band: glyph per working session, a waiting one counts as working', async (
     { display: 'QA', status: 'waiting', tool: 'Bash', tool_hint: 'test', cache_min: 50 },
     { display: 'Idle', status: 'idle', cache_min: 20 },
   ] as never[]
-  expect(bandLine(ss, 0)).toBe('⏳ ⚙️HomeLab ✏️Dev ❓QA · 1 idle (0 💤)')
+  expect(bandLine(ss, 0)).toBe('⏳ ⚙️ HomeLab ✏️ Dev ❓ QA · 1 idle (0 💤)')
 })
 
 test('checklist tab: yours first, label with counts', async () => {
