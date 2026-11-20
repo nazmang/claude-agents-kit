@@ -67,6 +67,13 @@ def fmt_age(seconds) -> str:
     return f"{s // 60}m"
 
 
+def created_url(cfg):
+    """Loopback when the server listens there (the host's own LAN address is not 'local' to it)."""
+    if "127.0.0.1" in [a.strip() for a in cfg.listen]:
+        return f"http://127.0.0.1:{cfg.port}"
+    return cfg.base_url
+
+
 def post_created(base_url):
     """Nudge the server so the push goes out now; it is fine if nobody listens."""
     try:
@@ -158,7 +165,7 @@ def main(argv, *, sessions=None, pid=None, conf_path=None, cfg=None, post=None,
                      options=options, command=args.command or "", ref=args.ref)
     print(q.id)
     try:
-        post(cfg.base_url)
+        post(created_url(cfg))
     except Exception:
         pass
     return 0

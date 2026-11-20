@@ -3,6 +3,7 @@
 deliver_one only does tmux work and returns a status string; the caller
 (the server loop) records attempts in the Store.
 """
+import glob
 import os
 import re
 import time
@@ -13,6 +14,8 @@ from .i18n import pick_lang
 IDLE_STATES = ("idle", "shell")
 MAX_INLINE = 2000
 VERIFY_DELAY = 1.0
+SCROLLBACK_LINES = 3000
+TRANSCRIPT_TAIL = 1024 * 1024
 
 STRINGS = {
     "ru": {"long_answer": "ответ в файле {path}"},
@@ -39,7 +42,23 @@ class TmuxOps:
         tmuxlib.tmux("send-keys", "-t", target, "Enter")
 
     def capture(self, target):
-        return tmuxlib.tmux("capture-pane", "-p", "-t", target)
+        return tmuxlib.tmux("capture-pane", "-p", "-J", "-S", f"-{SCROLLBACK_LINES}", "-t", target)
+
+    def transcript_has(self, sid, marker, projects_dir=None):
+        """True if `marker` is in the last TAIL_BYTES of the session's transcript."""
+        if not sid:
+            return False
+        root = projects_dir or tmuxlib.PROJECTS_DIR
+        for p in glob.glob(os.path.join(root, "*", f"{sid}.jsonl")):
+            try:
+                size = os.path.getsize(p)
+                with open(p, "rb") as f:
+                    f.seek(max(0, size - TRANSCRIPT_TAIL))
+                    if marker in f.read().decode("utf-8", "replace"):
+                        return True
+            except OSError:
+                continue
+        return False
 
 
 _CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -119,8 +138,12 @@ def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep) -> str:
     if s.get("status") not in IDLE_STATES or not tmux.input_empty(s["target"]):
         return "busy"
     marker = f", {q.id}): "
-    if marker in tmux.capture(s["target"]):   # already landed earlier: never type twice
+
+    def landed():
+        return marker in tmux.capture(s["target"]) or tmux.transcript_has(s.get("sid"), marker)
+
+    if landed():   # already landed earlier (maybe scrolled away): never type twice
         return "delivered"
     tmux.type(s["target"], format_answer(q, q.answer, cfg))
     sleep(VERIFY_DELAY)
-    return "delivered" if marker in tmux.capture(s["target"]) else "unverified"
+    return "delivered" if landed() else "unverified"

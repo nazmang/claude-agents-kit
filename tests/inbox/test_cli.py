@@ -109,6 +109,13 @@ class AskTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.e.store().list()[0].from_, "alpha")
 
+    def test_post_url_prefers_loopback(self):
+        from agents_inbox.config import Config
+        c = Config(listen=["127.0.0.1", "10.0.0.5"], port=8787, base_url="https://inbox.example.org")
+        self.assertEqual(cli.created_url(c), "http://127.0.0.1:8787")
+        c = Config(listen=["10.0.0.5"], port=8787, base_url="https://inbox.example.org/")
+        self.assertEqual(cli.created_url(c), "https://inbox.example.org/")
+
     def test_post_failure_swallowed(self):
         e = Env()
         def boom(url):

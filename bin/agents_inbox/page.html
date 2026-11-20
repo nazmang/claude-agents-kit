@@ -91,6 +91,7 @@ async function send(q, text, card) {
     if (r.ok || r.status === 409) {
       card.querySelectorAll("textarea, input").forEach(i => i.value = "");
       cards.delete(q.id);
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       refresh();
       return;
     }

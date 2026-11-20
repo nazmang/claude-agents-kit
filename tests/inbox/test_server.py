@@ -38,6 +38,9 @@ class FakeTmux:
     def capture(self, target):
         return self.screen
 
+    def transcript_has(self, sid, marker):
+        return False
+
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
@@ -243,6 +246,26 @@ class ServerTest(unittest.TestCase):
         self.app.join_kicks()
         self.assertEqual(self.sent, [])
 
+    def test_created_accepts_listen_address_source(self):
+        cfg = Config(listen=["127.0.0.2"], port=0, data_dir=self.cfg.data_dir,
+                     token_file=self.cfg.token_file, ntfy_url="http://127.0.0.1:9",
+                     ntfy_topic="topic", base_url="http://127.0.0.2:8787")
+        try:
+            srv = server.serve(cfg, self.app)
+        except OSError:
+            self.skipTest("cannot bind 127.0.0.2")
+        self.addCleanup(srv.close)
+        def post(source):
+            c = http.client.HTTPConnection("127.0.0.2", srv.ports[0], timeout=5, source_address=source)
+            try:
+                c.request("POST", "/api/created", body=b"{}")
+                return c.getresponse().status
+            finally:
+                c.close()
+        self.assertEqual(post(("127.0.0.2", 0)), 204)
+        self.app.join_kicks()
+        self.assertEqual(post(("127.0.0.1", 0)), 204)   # loopback stays local
+
     # --- loop -------------------------------------------------------------
     def test_loop_survives_errors(self):
         def boom():
@@ -265,7 +288,8 @@ class ListenTest(unittest.TestCase):
     def test_refuses_wildcard_listen(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        for bad in (["0.0.0.0"], ["::"], ["[::]"], ["*"], [""], ["127.0.0.1", "0.0.0.0"], []):
+        for bad in (["0.0.0.0"], ["::"], ["[::]"], ["*"], [""], ["127.0.0.1", "0.0.0.0"], [],
+                    ["0"], ["::0"], ["0:0:0:0:0:0:0:0"], ["[::0]"], [" 0.0.0.0 "]):
             cfg = Config(listen=bad, port=0, data_dir=tmp.name,
                          token_file=os.path.join(tmp.name, "tok"))
             app = server.App(cfg, Store(db_path(cfg)), log=lambda s: None)

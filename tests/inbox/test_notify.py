@@ -1,3 +1,5 @@
+import io
+import contextlib
 import json
 import os
 import sys
@@ -177,7 +179,10 @@ class SendTest(unittest.TestCase):
     def test_error_returns_false(self):
         def opener(req, timeout=None):
             raise OSError("down")
-        self.assertFalse(notify.send({"topic": "i"}, mkcfg(), opener=opener))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(notify.send({"topic": "i"}, mkcfg(), opener=opener))
+        self.assertIn("ntfy send failed", err.getvalue())
 
 
 class TickTest(unittest.TestCase):

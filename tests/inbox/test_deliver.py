@@ -20,8 +20,9 @@ def cfg(d=None):
 
 
 class FakeTmux:
-    def __init__(self, sessions, empty=True, screen=None):
+    def __init__(self, sessions, empty=True, screen=None, transcript=""):
         self._s, self.empty, self.screen = sessions, empty, screen
+        self.transcript = transcript
         self.typed = []
 
     def sessions(self):
@@ -37,6 +38,9 @@ class FakeTmux:
 
     def capture(self, target):
         return self.screen or ""
+
+    def transcript_has(self, sid, marker):
+        return marker in self.transcript
 
 
 def sess(name="agent", sid="s1", status="idle", target="=w:0"):
@@ -72,7 +76,8 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(os.path.exists(path))
         self.assertIn(path, out)
         self.assertEqual(out, f"owner (inbox, q-1120-01): ответ в файле {path}")
-        self.assertEqual(open(path, encoding="utf-8").read(), text)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), text)
 
     def test_exactly_2000_stays_inline(self):
         d = tempfile.mkdtemp()
@@ -84,8 +89,8 @@ class FormatTests(unittest.TestCase):
         d = os.path.join(tempfile.mkdtemp(), "sub", "inbox")
         text = "a\nb\x1b\tc" + "y" * 2100
         deliver.format_answer(q(), text, cfg(d))
-        self.assertEqual(open(os.path.join(d, "q-1120-01.md"), encoding="utf-8").read(),
-                         "a\nb\tc" + "y" * 2100)
+        with open(os.path.join(d, "q-1120-01.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "a\nb\tc" + "y" * 2100)
 
     def test_threshold_on_cleaned_text(self):
         d = tempfile.mkdtemp()
@@ -117,7 +122,8 @@ class ConfTests(unittest.TestCase):
     def test_conf_sid(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "sessions.conf")
-        open(p, "w").write("# c\nproj | agent | /tmp | opus | sid-1 | x\nproj | other | /tmp | opus | sid-2\n")
+        with open(p, "w") as f:
+            f.write("# c\nproj | agent | /tmp | opus | sid-1 | x\nproj | other | /tmp | opus | sid-2\n")
         self.assertEqual(deliver.conf_sid("agent", p), "sid-1")
         self.assertEqual(deliver.conf_sid("other", p), "sid-2")
         self.assertIsNone(deliver.conf_sid("nope", p))
@@ -166,10 +172,50 @@ class DeliverTests(unittest.TestCase):
     def test_duplicate_windows_types_once_into_conf_sid(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "sessions.conf")
-        open(p, "w").write("proj | agent | /tmp | opus | b\n")
+        with open(p, "w") as f:
+            f.write("proj | agent | /tmp | opus | b\n")
         f = FakeTmux([sess(sid="a", target="=w:0"), sess(sid="b", target="=w:1")])
         self.assertEqual(self.run_one(f, p), "delivered")
         self.assertEqual([t for t, _ in f.typed], ["=w:1"])
+
+    def test_marker_only_in_transcript_not_retyped(self):
+        f = FakeTmux([sess()], screen="scrolled away", transcript='..."owner (inbox, q-1120-01): да"...')
+        self.assertEqual(self.run_one(f), "delivered")
+        self.assertEqual(f.typed, [])
+
+    def test_marker_in_scrollback_capture_not_retyped(self):
+        f = FakeTmux([sess()], screen="old\n" * 50 + "owner (inbox, q-1120-01): да\nreply\n" * 3)
+        self.assertEqual(self.run_one(f), "delivered")
+        self.assertEqual(f.typed, [])
+
+    def test_verify_accepts_transcript(self):
+        class Late(FakeTmux):
+            def type(self, target, text):
+                self.typed.append((target, text))
+                self.transcript = text
+        f = Late([sess()], screen="blank")
+        self.assertEqual(self.run_one(f), "delivered")
+        self.assertEqual(len(f.typed), 1)
+
+
+class TranscriptTests(unittest.TestCase):
+    def test_finds_marker_in_tail_of_jsonl(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "proj-x"))
+        with open(os.path.join(d, "proj-x", "sid-9.jsonl"), "w", encoding="utf-8") as f:
+            f.write('{"a":"owner (inbox, q-1120-01): да"}\n')
+        ops = deliver.TmuxOps()
+        self.assertTrue(ops.transcript_has("sid-9", ", q-1120-01): ", projects_dir=d))
+        self.assertFalse(ops.transcript_has("sid-9", ", q-1120-02): ", projects_dir=d))
+        self.assertFalse(ops.transcript_has("nope", ", q-1120-01): ", projects_dir=d))
+        self.assertFalse(ops.transcript_has("", ", q-1120-01): ", projects_dir=d))
+
+    def test_only_tail_is_read(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "p"))
+        with open(os.path.join(d, "p", "s.jsonl"), "w", encoding="utf-8") as f:
+            f.write(", q-1120-01): \n" + "x" * (2 * 1024 * 1024))
+        self.assertFalse(deliver.TmuxOps().transcript_has("s", ", q-1120-01): ", projects_dir=d))
 
 
 if __name__ == "__main__":

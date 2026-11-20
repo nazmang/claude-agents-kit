@@ -6,6 +6,7 @@ per-question `otok` instead; /api/created is accepted only from loopback.
 """
 import argparse
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -31,7 +32,6 @@ NOTIFY_EVERY = 60
 STUCK_AFTER = timedelta(minutes=15)
 CLOSED_DAYS = 7
 MAX_BODY = 64 * 1024
-WILDCARDS = ("", "0.0.0.0", "::", "[::]", "*")
 LOCAL = ("127.0.0.1", "::1")
 COOKIE_MAX_AGE = 365 * 24 * 3600
 _QUERY = re.compile(r"\?[^\s\"']*")
@@ -262,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/answer":
             return self._answer()
         if path == "/api/created":
-            if self.client_address[0] not in LOCAL:
+            if self.client_address[0] not in LOCAL and self.client_address[0] not in self.local_addrs:
                 return self._send(403, "forbidden")
             self.app.kick(self.app.notify_tick)
             return self._send(204)
@@ -343,11 +343,28 @@ class Running:
             th.join(5)
 
 
+def _is_wildcard(addr):
+    host = addr.strip().strip("[]").strip()
+    if host in ("", "*"):
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False   # not resolvable: the bind will fail on its own
+    for info in infos:
+        try:
+            if ipaddress.ip_address(info[4][0].split("%", 1)[0]).is_unspecified:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _check_listen(listen):
     if not listen:
         raise SystemExit("inbox: listen is empty in the config; set e.g. listen = 127.0.0.1")
     for a in listen:
-        if a.strip() in WILDCARDS:
+        if _is_wildcard(a):
             raise SystemExit(f"inbox: refusing to listen on {a!r}: name explicit addresses")
 
 
@@ -356,13 +373,15 @@ def serve(cfg, app):
     _check_listen(cfg.listen)
     token = page_token(cfg.token_file)
     servers, threads = [], []
+    local_addrs = frozenset(a.strip().strip("[]") for a in cfg.listen)
     try:
         for addr in cfg.listen:
             host = addr.strip().strip("[]")
             cls = type("InboxServer", (ThreadingHTTPServer,), {
                 "address_family": socket.AF_INET6 if ":" in host else socket.AF_INET,
                 "daemon_threads": True})
-            h = type("InboxHandler", (Handler,), {"app": app, "token": token})
+            h = type("InboxHandler", (Handler,), {"app": app, "token": token,
+                                                  "local_addrs": local_addrs})
             servers.append(cls((host, cfg.port), h))
     except OSError:
         for s in servers:

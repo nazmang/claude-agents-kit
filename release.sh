@@ -39,6 +39,8 @@ else
   done
 fi
 python3 -m py_compile bin/agents
+python3 -m compileall -q bin/agents_inbox || { echo "compileall failed: bin/agents_inbox"; exit 1; }
+python3 -m unittest discover -s tests/inbox >/dev/null 2>&1 || { echo "inbox tests failed"; python3 -m unittest discover -s tests/inbox 2>&1 | tail -20; exit 1; }
 
 sha=$(git rev-parse --short HEAD)
 mkdir -p "$DEST/releases"
