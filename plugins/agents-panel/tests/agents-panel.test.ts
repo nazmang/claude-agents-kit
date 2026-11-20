@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { chooseLang, STRINGS, t, setLang, projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { chooseLang, STRINGS, t, setLang, projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, toolGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -41,9 +41,10 @@ test('sprites are 10×12 and pack into 60 cells', async () => {
 })
 
 test('activity icons and headline', async () => {
-  expect(activityIcon({ status: 'busy', tool: 'Read' })).toBe('📖')
-  expect(activityIcon({ status: 'busy', tool: 'Bash' })).toBe('⚡')
-  expect(activityIcon({ status: 'busy', tool: '' })).toBe('🧠')
+  expect(activityIcon({ status: 'busy', tool: 'Read' })).toBe('🔎')
+  expect(activityIcon({ status: 'busy', tool: 'Bash' })).toBe('⚙️')
+  expect(activityIcon({ status: 'busy', tool: '' })).toBe('💭')
+  expect(activityIcon({ status: 'waiting', tool: 'Bash' })).toBe('❓')
   expect(activityIcon({ status: 'idle', cache_min: -3 })).toBe('💤')
   expect(headline([{ status: 'busy' }, { status: 'idle', cache_min: 20 }, { status: 'idle', cache_min: -1 }] as never[]))
     .toBe('1 working · 1 waiting · 1 asleep')
@@ -62,7 +63,31 @@ test('band is one short line; dashboards are hidden', async () => {
     { display: 'Panel', gender: 'x', status: 'idle', cache_min: 40 },
   ] as never[]
   expect(visible(ss).length).toBe(2)
-  expect(bandLine(visible(ss), 0)).toBe('⏳ 👧Rita · 1 idle (1 💤)')
+  expect(bandLine(visible(ss), 0)).toBe('⏳ 💭Rita · 1 idle (1 💤)')
+})
+
+test('tool glyphs: what each busy session does', async () => {
+  const cases: [string, string, string][] = [
+    ['Edit', '', '✏️'], ['Write', '', '✏️'], ['MultiEdit', '', '✏️'], ['NotebookEdit', '', '✏️'],
+    ['Read', '', '🔎'], ['Grep', '', '🔎'], ['Glob', '', '🔎'], ['LS', '', '🔎'],
+    ['Bash', '', '⚙️'], ['Bash', 'test', '🧪'],
+    ['Agent', '', '🤖'], ['Task', '', '🤖'],
+    ['WebFetch', '', '🌐'], ['WebSearch', '', '🌐'], ['mcp__browser-use__open', '', '🌐'],
+    ['mcp__playwright__browser_click', '', '🌐'], ['mcp__claude-in-chrome__navigate', '', '🌐'],
+    ['mcp__atlassian__search', '', '🔌'], ['', '', '💭'],
+  ]
+  for (const [tool, hint, glyph] of cases) expect(`${tool}:${toolGlyph({ status: 'busy', tool, tool_hint: hint })}`).toBe(`${tool}:${glyph}`)
+  expect(toolGlyph({ status: 'waiting', tool: 'Edit' })).toBe('❓')
+})
+
+test('band: glyph per working session, a waiting one counts as working', async () => {
+  const ss = [
+    { display: 'HomeLab', status: 'busy', tool: 'Bash', cache_min: 50 },
+    { display: 'Dev', status: 'busy', tool: 'Edit', cache_min: 50 },
+    { display: 'QA', status: 'waiting', tool: 'Bash', tool_hint: 'test', cache_min: 50 },
+    { display: 'Idle', status: 'idle', cache_min: 20 },
+  ] as never[]
+  expect(bandLine(ss, 0)).toBe('⏳ ⚙️HomeLab ✏️Dev ❓QA · 1 idle (0 💤)')
 })
 
 test('checklist tab: yours first, label with counts', async () => {
@@ -85,13 +110,13 @@ const DATA = {
   messages: [{ ts: 0, from: 'Rita', to: 'Gleb', text: 'hi', cold: true }],
 }
 
-function setupUi(on, env: Record<string, string>) {
+function setupUi(on, env: Record<string, string>, data: object = DATA) {
   mock.clock(on, { now: 1_000_000 })
   mock.env(on, { HOME: '/home/u', ...env })
   on('command.register', () => ({ value: undefined }))
   on('session.start', () => ({ cwd: '/work' }))
   on('ui.invalidate', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(DATA), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(data), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
 }
 
 const PROPS = { band: { component: 'AbovePrompt', props: {} }, team: { component: 'Pane', requestId: 'team', props: { title: 'Team', focused: false } },
@@ -110,6 +135,19 @@ test('band, /team and /checklist draw on terminal and desktop, in English', asyn
     const cl = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.checklist } as never)
     expect(await cl.find({ type: 'Text', text: /3 open · 1 waiting on you/ })).toBeDefined()
     await cl.unmount()
+  }
+})
+
+test('band shows the open inbox questions only when there are any', async ($, on) => {
+  const reply = { ...DATA, inbox: null as object | null }
+  setupUi(on, { LANG: 'en_US.UTF-8' }, reply)
+  for (const [inbox, shown] of [[{ open: 2 }, true], [{ open: 0 }, false], [null, false]] as const) {
+    reply.inbox = inbox
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })   // refreshes the data
+    const band = await $.ui.mount({ plugin: 'agents-panel', surface: 'terminal', ...PROPS.band } as never)
+    expect(await band.find({ type: 'Text', text: /📥 2/ }) !== undefined).toBe(shown)
+    expect(await band.find({ type: 'Text', text: /📥/ }) !== undefined).toBe(shown)
+    await band.unmount()
   }
 })
 

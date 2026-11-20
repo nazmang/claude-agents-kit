@@ -63,6 +63,7 @@ export const STRINGS = {
     nobody: 'nobody',
     band_idle: '{n} idle ({a} 💤)',
     band_waiting: 'waiting on you: {n}',
+    band_inbox: '📥 {n}',
     cold_wake: ' woke a cold cache',
     no_snapshot: 'checklist: no snapshot yet',
     waiting_line: 'waiting on you: {w} · open: {o} · snapshot {at}',
@@ -95,6 +96,7 @@ export const STRINGS = {
     nobody: 'никого',
     band_idle: '{n} ждут ({a} 💤)',
     band_waiting: 'ждут тебя: {n}',
+    band_inbox: '📥 {n}',
     cold_wake: ' разбудил остывший кэш',
     no_snapshot: 'чек-лист: снимка пока нет',
     waiting_line: 'ждут тебя: {w} · открыто: {o} · снимок {at}',
@@ -127,6 +129,7 @@ export const STRINGS = {
     nobody: 'нікого',
     band_idle: '{n} чекають ({a} 💤)',
     band_waiting: 'чекають на тебе: {n}',
+    band_inbox: '📥 {n}',
     cold_wake: ' розбудив холодний кеш',
     no_snapshot: 'чек-лист: знімка ще немає',
     waiting_line: 'чекають на тебе: {w} · відкрито: {o} · знімок {at}',
@@ -224,11 +227,24 @@ async function refresh($) {
   try { data = JSON.parse(r.stdout); error = '' } catch { error = t('bad_json') }
 }
 
+// what a working session does now, from its last tool (the band and /team)
+export function toolGlyph(s) {
+  if (s.status === 'waiting') return '❓'      // a permission prompt or a question to answer
+  const t = String(s.tool || '')
+  if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(t)) return '✏️'
+  if (/^(Read|NotebookRead|Grep|Glob|LS)$/.test(t)) return '🔎'
+  if (/^(Bash|PowerShell|Monitor)$/.test(t)) return s.tool_hint === 'test' ? '🧪' : '⚙️'
+  if (/^(Agent|Task|Workflow)$/.test(t)) return '🤖'
+  if (/^(WebFetch|WebSearch)$/.test(t) || /^mcp__(.*browser|playwright|claude-in-chrome)/i.test(t)) return '🌐'
+  if (/^mcp__/.test(t)) return '🔌'
+  return t ? '🛠️' : '💭'
+}
+
 export function bandLine(sessions, frameNo) {
-  const busy = sessions.filter((s) => s.status === 'busy')
+  const busy = sessions.filter((s) => s.status === 'busy' || s.status === 'waiting')
   const asleep = sessions.filter((s) => s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0).length
   const who = busy.length
-    ? busy.map((s) => `${figure(s.gender)}${s.display}`).join(' ')
+    ? busy.map((s) => `${toolGlyph(s)}${s.display}`).join(' ')
     : t('nobody')
   return `${frameNo % 2 ? '⌛' : '⏳'} ${who} · ${t('band_idle', { n: sessions.length - busy.length, a: asleep })}`
 }
@@ -240,6 +256,7 @@ function band(Box, Text, e) {
   const parts = [bandLine(people, frame)]
   if (m) parts.push(`📨 ${hhmm(m.ts)} ${m.from}→${m.to}${m.cold ? ' ❄' : ''}`)
   if (data.checklist) parts.push(t('band_waiting', { n: data.checklist.waiting.length }))
+  if (data.inbox && data.inbox.open > 0) parts.push(t('band_inbox', { n: data.inbox.open }))
   parts.push('/team')
   return <Text dimColor wrap="truncate-end">{parts.join(' · ')}</Text>
 }
@@ -340,16 +357,8 @@ export function spriteCells(gender, color, { lift = false, dim = false } = {}) {
 export function activityIcon(s) {
   if (s.status === 'idle') return s.cache_min !== null && s.cache_min <= 0 ? '💤' : '☕'
   if (s.status === 'shell') return '⚙️'
-  if (s.status !== 'busy') return '❔'
-  const t = String(s.tool || '')
-  if (/^(Read|NotebookRead)$/.test(t)) return '📖'
-  if (/^(Edit|Write|NotebookEdit|MultiEdit)$/.test(t)) return '✏️'
-  if (/^(Bash|PowerShell|Monitor)$/.test(t)) return '⚡'
-  if (/^(Grep|Glob|ToolSearch|WebSearch|WebFetch)$/.test(t)) return '🔍'
-  if (/^(Agent|Task|Workflow)$/.test(t)) return '👥'
-  if (/^(SendMessage|ListAgents|ReadNotifications)$/.test(t)) return '💬'
-  if (/^mcp__/.test(t)) return '🔌'
-  return t ? '🛠️' : '🧠'
+  if (s.status === 'busy' || s.status === 'waiting') return toolGlyph(s)
+  return '❔'
 }
 
 export function headline(sessions) {
