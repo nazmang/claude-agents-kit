@@ -14,6 +14,15 @@
                                 compact one session now if it runs in tmux, is
                                 idle and has an empty input box; --wait - wait
                                 until done (exit 0 = done)
+  agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
+             [--ref R] [--from NAME] "title"
+                                put a question to the owner (kinds: decision,
+                                command, brainstorm, info-needed); prints its id.
+                                NAME is found from the tmux window, or pass --from
+                                (must be listed in sessions.conf). The answer is
+                                typed back into the asking window
+  agents ask --withdraw ID      withdraw your own open question
+  agents inbox [--all]          open questions (all statuses with --all); ! = blocking
   agents up <project> [name...]   start a project's sessions in tmux
   agents down <project> [name...] [--no-compact]
                                 compact and close them (--no-compact: just close,
@@ -53,8 +62,10 @@ Env: MIN_CTX (tokens; down skips compacting smaller contexts).
 import json, os, re, shlex, subprocess, sys, time, glob, uuid
 from datetime import datetime, timezone
 
-SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
-PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from agents_inbox.i18n import pick_lang  # noqa: E402
+from agents_inbox.tmuxlib import PROJECTS_DIR, TAIL_BYTES, input_empty, sessions, tmux  # noqa: E402
+
 CONF = os.path.expanduser("~/.config/agents/projects.conf")
 SESS_CONF = os.path.expanduser("~/.config/agents/sessions.conf")
 PEOPLE_CONF = os.path.expanduser("~/.config/agents/people.conf")
@@ -64,7 +75,6 @@ OWNER_WHO = set(os.environ.get("OWNER_WHO", "владелец,вместе,ты,
 LOG = os.path.expanduser("~/.local/state/agents/compact.log")
 CACHE_TTL = 60
 MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
-TAIL_BYTES = 4 * 1024 * 1024
 
 
 # --- language ---------------------------------------------------------------
@@ -72,17 +82,6 @@ TAIL_BYTES = 4 * 1024 * 1024
 # LC_MESSAGES, LANG: "ru..." is Russian, anything else English.
 # Only text a person reads is translated: not `status --json`, not what is
 # typed into tmux windows (/compact, /exit), not what is looked for on screen.
-def pick_lang():
-    forced = os.environ.get("AGENTS_LANG", "").strip().lower()
-    if forced in ("ru", "en"):
-        return forced
-    for k in ("LC_ALL", "LC_MESSAGES", "LANG"):
-        v = os.environ.get(k, "").strip()
-        if v:
-            return "ru" if v.lower().startswith("ru") else "en"
-    return "en"
-
-
 LANG = pick_lang()
 
 STRINGS = {
@@ -158,6 +157,15 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
                                 сжать одну сессию сейчас, если она в tmux,
                                 простаивает и поле ввода пустое; --wait - ждать
                                 конца (код 0 = готово)
+  agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
+             [--ref R] [--from ИМЯ] "заголовок"
+                                задать вопрос владельцу (kind: decision, command,
+                                brainstorm, info-needed); печатает id. ИМЯ
+                                определяется по окну tmux, иначе укажи --from
+                                (имя из sessions.conf). Ответ печатается обратно
+                                в окно спросившего
+  agents ask --withdraw ID      отозвать свой открытый вопрос
+  agents inbox [--all]          открытые вопросы (--all - все статусы); ! = блокирует
   agents up <проект> [имя...]   поднять сессии проекта в tmux
   agents down <проект> [имя...] [--no-compact]
                                 сжать и закрыть (--no-compact: просто закрыть,
@@ -207,125 +215,6 @@ def log(msg):
     with open(LOG, "a") as f:
         f.write(line + "\n")
     print(line)
-
-
-def tmux(*args):
-    r = subprocess.run(["tmux", *args], capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else ""
-
-
-def tmux_panes():
-    """pane_pid -> ("=session:index", "session:name"); target by index, names may repeat."""
-    out = {}
-    for line in tmux("list-panes", "-a", "-F",
-                     "#{pane_pid}\t#{session_name}\t#{window_index}\t#{window_name}").splitlines():
-        pid, s, wi, wn = line.split("\t")
-        out[int(pid)] = (f"={s}:{wi}", f"{s}:{wn}")
-    return out
-
-
-def ancestors(pid):
-    seen = []
-    for _ in range(10):
-        seen.append(pid)
-        try:
-            with open(f"/proc/{pid}/stat") as f:
-                pid = int(f.read().rsplit(")", 1)[1].split()[1])
-        except Exception:
-            break
-        if pid <= 1:
-            break
-    return seen
-
-
-def transcript_info(sid):
-    """(time of last reply, context tokens, compacted since then, model, last tool)."""
-    paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
-    if not paths:
-        return None, 0, False, "", ""
-    p = paths[0]
-    size = os.path.getsize(p)
-    with open(p, "rb") as f:
-        f.seek(max(0, size - TAIL_BYTES))
-        lines = f.read().decode("utf-8", "replace").splitlines()
-    last_ts, ctx, model, compacted_after = None, 0, "", False
-    tool = ""   # the newest assistant entry: its tool_use name, or "" for text/thinking
-    for line in reversed(lines):
-        if '"type":"assistant"' not in line:
-            continue
-        try:
-            content = (json.loads(line).get("message") or {}).get("content") or []
-        except Exception:
-            continue
-        uses = [c.get("name", "") for c in content if isinstance(c, dict) and c.get("type") == "tool_use"]
-        tool = uses[-1] if uses else ""
-        break
-    for line in reversed(lines):
-        if '"compact_boundary"' in line and last_ts is None and not compacted_after:
-            compacted_after = True
-            try:  # idle counts from the compaction, not from the reply before it
-                bts = datetime.fromisoformat(json.loads(line)["timestamp"].replace("Z", "+00:00"))
-            except Exception:
-                bts = None
-        if '"type":"assistant"' not in line:
-            continue
-        try:
-            d = json.loads(line)
-        except Exception:
-            continue
-        msg = d.get("message") or {}
-        u = msg.get("usage") or {}
-        if not u:
-            continue
-        last_ts = datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00"))
-        if compacted_after and bts:
-            last_ts = bts
-        ctx = sum(u.get(k, 0) for k in ("input_tokens", "cache_read_input_tokens",
-                                        "cache_creation_input_tokens"))
-        model = msg.get("model", "")
-        break
-    return last_ts, ctx, compacted_after, model, tool
-
-
-def sessions():
-    panes = tmux_panes()
-    out = []
-    for f in glob.glob(os.path.join(SESSIONS_DIR, "*.json")):
-        try:
-            d = json.load(open(f))
-        except Exception:
-            continue
-        pid = d.get("pid")
-        if not pid or not os.path.exists(f"/proc/{pid}") or d.get("kind") != "interactive":
-            continue
-        target = label = None
-        for a in ancestors(pid):
-            if a in panes:
-                target, label = panes[a]
-                break
-        last, ctx, compacted, model, tool = transcript_info(d.get("sessionId", ""))
-        try:  # --model on the command line wins: right after a restart there are no replies yet
-            argv = open(f"/proc/{pid}/cmdline", "rb").read().decode().split("\0")
-            if "--model" in argv:
-                model = argv[argv.index("--model") + 1]
-        except Exception:
-            pass
-        idle = (datetime.now(timezone.utc) - last).total_seconds() / 60 if last else None
-        out.append(dict(name=d.get("name") or f"(pid {pid})", pid=pid, sid=d.get("sessionId"),
-                        cwd=d.get("cwd", ""), status=d.get("status", ""), target=target,
-                        label=label, idle=idle, ctx=0 if compacted else ctx, model=model, tool=tool))
-    return sorted(out, key=lambda s: (s["label"] or "~", s["name"]))
-
-
-def input_empty(target):
-    screen = tmux("capture-pane", "-e", "-p", "-t", target)
-    lines = [l for l in screen.splitlines() if "❯" in l]
-    if not lines:
-        return False
-    rest = lines[-1].split("❯", 1)[1].replace("\xa0", " ")
-    if "\x1b[2m" in rest:          # dim placeholder text = empty
-        return True
-    return re.sub(r"\x1b\[[0-9;]*m|\s", "", rest) == ""
 
 
 def do_compact(s):
@@ -636,8 +525,34 @@ def save_session_id(project, name, sid):
         f.writelines(lines)
 
 
+def live_by_row(project, rows):
+    """Live session per config row: by id, else by name and directory.
+
+    /clear starts a new session id inside the same process, so the id in the
+    config goes stale. The name (claude -n) and cwd still match; when they do,
+    the new id is written back to the config.
+    """
+    live = sessions()
+    by_sid = {s["sid"]: s for s in live}
+    found = {}
+    for r in rows:
+        name, d, sid = r[1], os.path.realpath(os.path.expanduser(r[2])), r[4]
+        s = by_sid.get(sid) if sid else None
+        if s is None:
+            same = [x for x in live if x["name"] == name and os.path.realpath(x["cwd"]) == d]
+            if len(same) == 1:
+                s = same[0]
+                if s["sid"] and s["sid"] != sid:
+                    save_session_id(project, name, s["sid"])
+                    r[4] = s["sid"]
+        if s is not None:
+            found[name] = s
+    return found
+
+
 def sessions_up(project, rows, fresh=False):
-    live = {s["sid"]: s for s in sessions()}
+    running = live_by_row(project, rows)
+    live = {s["sid"]: s for s in running.values()}
     for _, name, d, model, sid, extra in rows:
         if fresh and sid in live:
             print(f"  = {name}: " + t("running_first", project=project))
@@ -673,11 +588,8 @@ def sessions_up(project, rows, fresh=False):
 
 
 def sessions_down(project, rows, compact=True):
-    wanted = {r[4] for r in rows if r[4]}
     rc = 0
-    for s in sessions():
-        if s["sid"] not in wanted:
-            continue
+    for s in live_by_row(project, rows).values():
         if not s["target"]:
             print(f"  ! {s['name']}: " + t("close_yourself"))
             rc = 1
@@ -748,6 +660,9 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(DOC_RU if LANG == "ru" else __doc__); return 0
     c = argv[0]
+    if c in ("ask", "inbox"):
+        from agents_inbox import cli
+        return cli.main(argv)
     if c == "status" and "--json" in argv:
         cmd_status_json(opt_number(argv, "--max-age", 0))
     elif c == "status":
