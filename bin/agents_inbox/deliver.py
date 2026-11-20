@@ -4,6 +4,7 @@ deliver_one only does tmux work and returns a status string; the caller
 (the server loop) records attempts in the Store.
 """
 import glob
+import json
 import os
 import re
 import time
@@ -66,8 +67,12 @@ _BAD_INLINE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _BAD_FILE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")   # keeps \t and \n
 
 
+def answer_prefix(q, cfg) -> str:
+    return f"{cfg.owner_name} ({cfg.inbox_label}, {q.id}): "
+
+
 def format_answer(q, text, cfg) -> str:
-    prefix = f"{cfg.owner_name} ({cfg.inbox_label}, {q.id}): "
+    prefix = answer_prefix(q, cfg)
     text = _CSI.sub("", text)
     flat = _BAD_INLINE.sub("", re.sub(r"\r\n|\r|\n", " ⏎ ", text))
     if len(flat) <= MAX_INLINE:
@@ -137,10 +142,14 @@ def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep) -> str:
         return "no-session"
     if s.get("status") not in IDLE_STATES or not tmux.input_empty(s["target"]):
         return "busy"
-    marker = f", {q.id}): "
+    marker = answer_prefix(q, cfg)
+    escaped = json.dumps(marker, ensure_ascii=False)[1:-1]   # as stored in a jsonl transcript
+    escaped_ascii = json.dumps(marker)[1:-1]
 
     def landed():
-        return marker in tmux.capture(s["target"]) or tmux.transcript_has(s.get("sid"), marker)
+        if marker in tmux.capture(s["target"]):
+            return True
+        return any(tmux.transcript_has(s.get("sid"), m) for m in dict.fromkeys((marker, escaped, escaped_ascii)))
 
     if landed():   # already landed earlier (maybe scrolled away): never type twice
         return "delivered"

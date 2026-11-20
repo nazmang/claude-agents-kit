@@ -178,6 +178,21 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual(self.run_one(f, p), "delivered")
         self.assertEqual([t for t, _ in f.typed], ["=w:1"])
 
+    def test_other_owner_prefix_does_not_count(self):
+        class Appending(FakeTmux):
+            def type(self, target, text):
+                self.typed.append((target, text))
+                self.screen += "\n" + text
+        f = Appending([sess()], screen="someone (inbox, q-1120-01): old",
+                      transcript='"someone (inbox, q-1120-01): old"')
+        self.assertEqual(self.run_one(f), "delivered")
+        self.assertEqual(len(f.typed), 1)
+
+    def test_full_prefix_in_screen_not_retyped(self):
+        f = FakeTmux([sess()], screen="owner (inbox, q-1120-01): да")
+        self.assertEqual(self.run_one(f), "delivered")
+        self.assertEqual(f.typed, [])
+
     def test_marker_only_in_transcript_not_retyped(self):
         f = FakeTmux([sess()], screen="scrolled away", transcript='..."owner (inbox, q-1120-01): да"...')
         self.assertEqual(self.run_one(f), "delivered")
@@ -205,17 +220,17 @@ class TranscriptTests(unittest.TestCase):
         with open(os.path.join(d, "proj-x", "sid-9.jsonl"), "w", encoding="utf-8") as f:
             f.write('{"a":"owner (inbox, q-1120-01): да"}\n')
         ops = deliver.TmuxOps()
-        self.assertTrue(ops.transcript_has("sid-9", ", q-1120-01): ", projects_dir=d))
-        self.assertFalse(ops.transcript_has("sid-9", ", q-1120-02): ", projects_dir=d))
-        self.assertFalse(ops.transcript_has("nope", ", q-1120-01): ", projects_dir=d))
-        self.assertFalse(ops.transcript_has("", ", q-1120-01): ", projects_dir=d))
+        self.assertTrue(ops.transcript_has("sid-9", "owner (inbox, q-1120-01): ", projects_dir=d))
+        self.assertFalse(ops.transcript_has("sid-9", "owner (inbox, q-1120-02): ", projects_dir=d))
+        self.assertFalse(ops.transcript_has("nope", "owner (inbox, q-1120-01): ", projects_dir=d))
+        self.assertFalse(ops.transcript_has("", "owner (inbox, q-1120-01): ", projects_dir=d))
 
     def test_only_tail_is_read(self):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, "p"))
         with open(os.path.join(d, "p", "s.jsonl"), "w", encoding="utf-8") as f:
             f.write(", q-1120-01): \n" + "x" * (2 * 1024 * 1024))
-        self.assertFalse(deliver.TmuxOps().transcript_has("s", ", q-1120-01): ", projects_dir=d))
+        self.assertFalse(deliver.TmuxOps().transcript_has("s", "owner (inbox, q-1120-01): ", projects_dir=d))
 
 
 if __name__ == "__main__":
