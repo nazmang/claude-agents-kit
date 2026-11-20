@@ -1,6 +1,7 @@
 # Install: copy to ~/.config/systemd/user/agents-inbox.service, then
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now agents-inbox
+# ExecStart assumes install.sh's default BIN (~/.local/bin); adjust it if you set BIN.
 [Unit]
 Description=agents-inbox: question queue for the owner
 

@@ -172,12 +172,12 @@ agents ask "Run the migration on staging" --kind command --command "make migrate
 agents ask "Ideas for the onboarding flow" --kind brainstorm --body "context..."
 agents ask "Which branch is the release?" --kind info-needed --blocking
 agents inbox                      # open questions (--all: closed ones too)
-agents ask --withdraw q12         # you answered in the window yourself
+agents ask --withdraw q-1120-01         # you answered in the window yourself
 ```
 
 `agents ask` prints the question id. It finds the session name from the tmux
 window it runs in; from a sub-agent or a service without tmux pass `--from
-NAME` (a name from `sessions.conf`). `--blocking` marks a question that
+NAME` (a name from `sessions.conf`); `--withdraw` needs it outside tmux too. `--blocking` marks a question that
 stops the agent's work.
 
 ### Setup
@@ -186,7 +186,9 @@ Copy `examples/inbox.conf` to `~/.config/agents/inbox.conf` and edit it; every
 key is commented there (`owner_name`, `inbox_label`, `listen`, `port`,
 `base_url`, `ntfy_url`, `ntfy_topic`, `ntfy_token_file`, `presence_file`,
 `away_marker`, `quiet_hours`, `data_dir`, `token_file`). Without a file the
-server listens on `127.0.0.1:8787` with pushes off.
+server listens on `127.0.0.1:8787` with pushes off. The config path can also
+be set with `agents-inbox --conf PATH` or the env `AGENTS_INBOX_CONF`; the
+env `AGENTS_SESSIONS_CONF` points to another `sessions.conf`.
 
 On first start the server writes a page token to `~/.config/agents/inbox.token`
 (mode 600). Open `base_url/?t=<token>` once; the server sets a cookie and
@@ -208,19 +210,21 @@ systemctl --user enable --now agents-inbox
 
 With `ntfy_topic` set, a push goes out only for a `--blocking` question or a
 `decision`. Quiet hours (default 23:00-08:00): a blocking question is pushed
-without sound, a decision is not pushed. If `presence_file` holds
-`away_marker` and is fresh (under 15 min), you count as away; with no file,
-an empty path or a stale file you count as home. The push has the title only:
-no question body and no page token. Its buttons carry one-time tokens that
+without sound, a decision waits. If `presence_file` holds `away_marker`
+(default `не дома`) and is fresh (under 15 min), you count as away: only a
+`--blocking` question is pushed (with sound), a decision waits until you are
+home. With no file, an empty path or a stale file you count as home. The push
+carries the asker's name, the kind and the question title, never the body, and
+no page token. Its buttons carry one-time tokens that
 answer that one question, once; a second tap is rejected.
 
-### Safety
+### Inbox safety
 
 - The server binds only the addresses in `listen` and refuses `0.0.0.0` and
   `::`. Put your LAN or VPN address there, not a wildcard.
-- The page and every POST need the cookie, or the one-time token of an ntfy
-  button. A query string is never logged.
-- `/api/created` (the nudge `agents ask` sends) is accepted from localhost only.
+- Every POST except `/api/created` (localhost only; it is the nudge `agents
+  ask` sends) needs the cookie or a one-time token. The page needs the cookie.
+  A query string is never logged.
 - Delivery follows the same rule as `agents compact`: idle session, empty
   input box, otherwise nothing is typed.
 
