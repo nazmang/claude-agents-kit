@@ -68,9 +68,13 @@ def _row(r) -> Question:
 class Store:
     def __init__(self, path: str):
         self.path = path
-        with self._conn() as c:
+        c = self._conn()
+        try:
             c.execute("PRAGMA journal_mode=WAL")
             c.execute(_SCHEMA)
+            c.commit()
+        finally:
+            c.close()
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10)

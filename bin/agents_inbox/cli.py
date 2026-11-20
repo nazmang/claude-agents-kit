@@ -139,7 +139,7 @@ def main(argv, *, sessions=None, pid=None, conf_path=None, cfg=None, post=None,
         return err
     data_dir = os.path.expanduser(cfg.data_dir)
     os.makedirs(data_dir, mode=0o700, exist_ok=True)
-    store = Store(os.path.join(data_dir, "inbox.db"))
+    store = Store(config_mod.db_path(cfg))
 
     if args.withdraw:
         try:
@@ -171,7 +171,7 @@ def _inbox(argv, cfg, now):
         args = p.parse_args(argv)
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 2
-    path = os.path.join(os.path.expanduser(cfg.data_dir), "inbox.db")
+    path = config_mod.db_path(cfg)
     qs = Store(path).list() if os.path.exists(path) else []
     if not args.all:
         qs = [q for q in qs if q.status == "open"]

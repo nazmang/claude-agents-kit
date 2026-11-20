@@ -24,6 +24,11 @@ def default_path() -> str:
     return os.environ.get("AGENTS_INBOX_CONF") or os.path.expanduser("~/.config/agents/inbox.conf")
 
 
+def db_path(cfg) -> str:
+    """Path of the question database inside cfg.data_dir."""
+    return os.path.join(os.path.expanduser(cfg.data_dir), "inbox.db")
+
+
 def _parse_hours(v: str) -> tuple:
     a, b = v.replace(":00", "").split("-", 1)
     return (int(a), int(b))

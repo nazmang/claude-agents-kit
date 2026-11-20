@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{title}}</title>
+<style nonce="{{nonce}}">
+:root { --bg:#f6f6f4; --card:#fff; --fg:#1b1b1b; --muted:#6b6b6b; --line:#dcdcd8;
+        --accent:#2456c7; --accent-fg:#fff; --urgent:#c0392b; --warn:#b26a00; --ok:#2e7d32; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#141414; --card:#1f1f1f; --fg:#ececec; --muted:#9a9a9a; --line:#353535;
+          --accent:#6f9bff; --accent-fg:#0d0d0d; --urgent:#ff6b5b; --warn:#f0a840; --ok:#6cc070; }
+}
+* { box-sizing: border-box; }
+html, body { margin:0; background:var(--bg); color:var(--fg); }
+body { font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+       padding: 12px 16px 48px; max-width: 760px; margin: 0 auto; overflow-wrap: anywhere; }
+h1 { font-size: 20px; margin: 4px 0 12px; }
+h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+     margin: 20px 0 8px; }
+h2.urgent { color: var(--urgent); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: 12px; margin: 0 0 10px; }
+.card.blocking { border-left: 4px solid var(--urgent); }
+.meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.title { font-weight: 600; margin: 4px 0; white-space: pre-wrap; }
+.tag { font-size: 13px; font-weight: 600; }
+.tag.wait { color: var(--warn); } .tag.stuck { color: var(--urgent); } .tag.ok { color: var(--ok); }
+details > summary { cursor: pointer; color: var(--accent); min-height: 32px; padding: 4px 0; }
+.text, pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0;
+             font-size: 14px; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+button { min-height: 44px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+         background: var(--accent); color: var(--accent-fg); font: inherit; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .5; }
+textarea, input[type=text] { width: 100%; min-height: 44px; font: inherit; padding: 8px;
+         border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+textarea { min-height: 88px; resize: vertical; }
+.err { color: var(--urgent); font-size: 14px; }
+.answer { font-size: 14px; color: var(--muted); white-space: pre-wrap; }
+#status { color: var(--urgent); font-size: 14px; min-height: 1em; }
+</style>
+</head>
+<body>
+<h1 id="h"></h1>
+<div id="status"></div>
+<main id="list"></main>
+<script nonce="{{nonce}}">
+"use strict";
+const S = /*STRINGS*/null;
+const cards = new Map();   // id -> {el, sig}
+
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k) e.append(k);
+  return e;
+}
+
+function age(sec) {
+  if (sec >= 86400) return S.ago_d.replace("{n}", Math.floor(sec / 86400));
+  if (sec >= 3600) return S.ago_h.replace("{n}", Math.floor(sec / 3600));
+  return S.ago_m.replace("{n}", Math.floor(sec / 60));
+}
+
+function group(q) {
+  if (!["open", "answered"].includes(q.status)) return "closed";
+  if (q.blocking && q.status === "open") return "urgent";
+  if (q.kind === "decision") return "decisions";
+  if (q.kind === "command") return "commands";
+  return "talk";
+}
+
+async function send(q, text, card) {
+  const btns = card.querySelectorAll("button");
+  btns.forEach(b => b.disabled = true);
+  const err = card.querySelector(".err");
+  err.textContent = "";
+  try {
+    const r = await fetch("/api/answer", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: q.id, text }) });
+    if (r.status === 409) err.textContent = S.closed_now;
+    else if (!r.ok) err.textContent = S.error + " " + r.status;
+    if (r.ok || r.status === 409) {
+      card.querySelectorAll("textarea, input").forEach(i => i.value = "");
+      cards.delete(q.id);
+      refresh();
+      return;
+    }
+  } catch (e) { err.textContent = S.offline; }
+  btns.forEach(b => b.disabled = false);
+}
+
+async function copy(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) {
+    const ta = el("textarea", { readonly: "" });
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.append(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    ta.remove();
+  }
+  btn.textContent = S.copied;
+  setTimeout(() => { btn.textContent = S.copy; }, 1500);
+}
+
+function answerBox(q, card, multiline) {
+  const field = multiline ? el("textarea", { "aria-label": S.own })
+                          : el("input", { type: "text", "aria-label": S.own, placeholder: S.own });
+  const go = () => { if (field.value.trim()) send(q, field.value, card); };
+  if (!multiline) field.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  return el("div", {}, field, el("div", { class: "row" }, el("button", { text: S.send, onclick: go })));
+}
+
+function render(q) {
+  const card = el("article", { class: "card" + (q.blocking ? " blocking" : ""), "data-id": q.id });
+  const meta = el("div", { class: "meta" },
+    el("span", { text: q.from_ }), el("span", { text: q.kind }),
+    el("span", { text: age(q.age_sec) }), el("span", { text: q.id }));
+  if (q.status === "answered")
+    meta.append(el("span", { class: "tag " + (q.stuck ? "stuck" : "wait"),
+                             text: q.stuck ? S.stuck : S.waiting }));
+  else if (q.status === "delivered") meta.append(el("span", { class: "tag ok", text: S.delivered }));
+  else if (q.status === "withdrawn") meta.append(el("span", { class: "tag", text: S.withdrawn }));
+  card.append(meta, el("div", { class: "title", text: q.title }));
+  if (q.body) card.append(el("details", {}, el("summary", { text: S.details }),
+                                         el("div", { class: "text", text: q.body })));
+  if (q.ref) card.append(el("div", { class: "meta" }, el("span", { text: q.ref })));
+  if (q.answer) card.append(el("div", { class: "answer", text: S.answered + ": " + q.answer }));
+  if (q.status === "open") {
+    if (q.kind === "command" && q.command) {
+      const b = el("button", { class: "ghost", text: S.copy });
+      b.addEventListener("click", () => copy(q.command, b));
+      card.append(el("pre", { text: q.command }), el("div", { class: "row" }, b));
+    }
+    if (q.kind === "decision" && q.options.length) {
+      const row = el("div", { class: "row" });
+      for (const o of q.options) row.append(el("button", { text: o, onclick: () => send(q, o, card) }));
+      card.append(row);
+    }
+    card.append(answerBox(q, card, q.kind === "brainstorm" || q.kind === "info-needed"));
+  }
+  card.append(el("div", { class: "err" }));
+  return card;
+}
+
+function busy(card) {
+  for (const i of card.querySelectorAll("textarea, input"))
+    if (i === document.activeElement || i.value !== "") return true;
+  return false;
+}
+
+function draw(items) {
+  const order = ["urgent", "decisions", "commands", "talk", "closed"];
+  const by = Object.fromEntries(order.map(g => [g, []]));
+  for (const q of items) by[group(q)].push(q);
+  const list = document.getElementById("list");
+  const oldClosed = list.querySelector("details.closed");
+  const closedOpen = oldClosed ? oldClosed.open : false;
+  const frag = document.createDocumentFragment();
+  const seen = new Set();
+  for (const g of order) {
+    if (!by[g].length) continue;
+    const box = g === "closed" ? el("details", { class: "closed" }, el("summary", {}, el("span", { text: S.closed + " (" + by[g].length + ")" })))
+                               : el("section", {}, el("h2", { class: g === "urgent" ? "urgent" : "", text: S[g] }));
+    if (g === "closed") box.open = closedOpen;
+    for (const q of (g === "closed" ? by[g].slice().reverse() : by[g])) {
+      seen.add(q.id);
+      const sig = JSON.stringify([q.status, q.stuck, q.answer, Math.floor(q.age_sec / 60)]);
+      let c = cards.get(q.id);
+      if (!c || (c.sig !== sig && !busy(c.el))) { c = { el: render(q), sig }; cards.set(q.id, c); }
+      box.append(c.el);
+    }
+    frag.append(box);
+  }
+  for (const id of [...cards.keys()]) if (!seen.has(id)) cards.delete(id);
+  list.replaceChildren(frag);
+  if (!items.length) list.append(el("p", { text: S.empty }));
+}
+
+async function refresh() {
+  const st = document.getElementById("status");
+  try {
+    const r = await fetch("/api/questions", { credentials: "same-origin", cache: "no-store" });
+    if (!r.ok) { st.textContent = S.error + " " + r.status; return; }
+    st.textContent = "";
+    const items = await r.json();
+    const a = document.activeElement;
+    // moving a focused field would drop the keyboard: wait for the next tick
+    if (a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && document.getElementById("list").contains(a)) return;
+    draw(items);
+  } catch (e) { st.textContent = S.offline; }
+}
+
+document.getElementById("h").textContent = S.title;
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>
