@@ -72,9 +72,18 @@ def format_answer(q, text, cfg) -> str:
     return prefix + t("long_answer", path=path)
 
 
+def _target_key(target):
+    """"=session:index" -> (session, int index); unparsable -> (target, -1)."""
+    try:
+        sess, idx = target.rsplit(":", 1)
+        return (sess, int(idx))
+    except ValueError:
+        return (target, -1)
+
+
 def pick_target(name, sessions, conf_sid):
     cands = sorted((s for s in sessions if s.get("name") == name and s.get("target")),
-                   key=lambda s: s["target"])
+                   key=lambda s: _target_key(s["target"]))
     for s in cands:
         if conf_sid and s.get("sid") == conf_sid:
             return s
@@ -109,6 +118,9 @@ def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep) -> str:
         return "no-session"
     if s.get("status") not in IDLE_STATES or not tmux.input_empty(s["target"]):
         return "busy"
+    marker = f", {q.id}): "
+    if marker in tmux.capture(s["target"]):   # already landed earlier: never type twice
+        return "delivered"
     tmux.type(s["target"], format_answer(q, q.answer, cfg))
     sleep(VERIFY_DELAY)
-    return "delivered" if f", {q.id}): " in tmux.capture(s["target"]) else "unverified"
+    return "delivered" if marker in tmux.capture(s["target"]) else "unverified"

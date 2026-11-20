@@ -104,6 +104,10 @@ class PickTests(unittest.TestCase):
         self.assertEqual(deliver.pick_target("agent", ss, None)["target"], "=w:1")
         self.assertEqual(deliver.pick_target("agent", ss, "zzz")["target"], "=w:1")
 
+    def test_target_order_numeric(self):
+        ss = [sess(sid="a", target="=w:10"), sess(sid="b", target="=w:2")]
+        self.assertEqual(deliver.pick_target("agent", ss, None)["target"], "=w:2")
+
     def test_no_target_ignored(self):
         self.assertIsNone(deliver.pick_target("agent", [sess(target=None)], None))
         self.assertIsNone(deliver.pick_target("other", [sess()], None))
@@ -148,6 +152,11 @@ class DeliverTests(unittest.TestCase):
 
     def test_shell_state_is_idle(self):
         self.assertEqual(self.run_one(FakeTmux([sess(status="shell")])), "delivered")
+
+    def test_already_landed_not_retyped(self):
+        f = FakeTmux([sess()], screen="owner (inbox, q-1120-01): да")
+        self.assertEqual(self.run_one(f), "delivered")
+        self.assertEqual(f.typed, [])
 
     def test_unverified_when_capture_lacks_id(self):
         f = FakeTmux([sess()], screen="nothing here")
