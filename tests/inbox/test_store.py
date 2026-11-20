@@ -25,6 +25,34 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(c.id, "q-1121-01")
         self.assertEqual(a.status, "open")
 
+    def test_mark_typed(self):
+        q = self.store.create("alpha", "decision", "A", now=self.t)
+        self.assertEqual((q.typed_at, q.typed_sid), ("", ""))
+        self.store.mark_typed(q.id, "sid-1", self.t)
+        got = self.store.get(q.id)
+        self.assertEqual((got.typed_at, got.typed_sid), ("2026-11-20T12:00:00", "sid-1"))
+
+    def test_old_database_gains_typed_columns(self):
+        import sqlite3
+        path = os.path.join(self.tmp.name, "old.db")
+        c = sqlite3.connect(path)
+        c.execute("""CREATE TABLE questions (
+  id TEXT PRIMARY KEY, from_ TEXT NOT NULL, kind TEXT NOT NULL, blocking INTEGER NOT NULL,
+  title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', options TEXT NOT NULL DEFAULT '[]',
+  command TEXT NOT NULL DEFAULT '', ref TEXT NOT NULL DEFAULT '', created TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open', answer TEXT NOT NULL DEFAULT '',
+  answered_at TEXT NOT NULL DEFAULT '', delivered_at TEXT NOT NULL DEFAULT '',
+  first_attempt TEXT NOT NULL DEFAULT '', last_attempt TEXT NOT NULL DEFAULT '',
+  notified_at TEXT NOT NULL DEFAULT '', otok TEXT NOT NULL DEFAULT '')""")
+        c.execute("INSERT INTO questions (id, from_, kind, blocking, title, created) "
+                  "VALUES ('q-1120-01', 'a', 'decision', 0, 'T', '2026-11-20T12:00:00')")
+        c.commit()
+        c.close()
+        st = Store(path)
+        self.assertEqual(st.get("q-1120-01").typed_at, "")
+        st.mark_typed("q-1120-01", "s", self.t)
+        self.assertEqual(Store(path).get("q-1120-01").typed_sid, "s")
+
     def test_create_roundtrip(self):
         q = self.store.create("alpha", "command", "T", blocking=True, body="b",
                               options=["yes", "no"], command="ls", ref="r", now=self.t)

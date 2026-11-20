@@ -130,7 +130,8 @@ class App:
     def _deliver(self, q):
         self.store.mark_attempt(q.id)
         r = deliver.deliver_one(q, self.cfg, tmux=self.tmux, conf_path=self.conf_path,
-                                sleep=self.sleep)
+                                sleep=self.sleep, clock=self.clock,
+                                on_typed=lambda sid, when: self.store.mark_typed(q.id, sid, when))
         if r == "delivered":
             self.store.mark_delivered(q.id)
         return r
@@ -255,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             t = parse_qs(u.query).get("t")
             if t:
                 if hmac.compare_digest(t[0].encode(), self.token.encode()):
-                    ck = (f"inbox={self.token}; HttpOnly; SameSite=Strict; Path=/; "
+                    ck = (f"inbox={self.token}; HttpOnly; SameSite=Lax; Path=/; "
                           f"Max-Age={COOKIE_MAX_AGE}")
                     return self._send(302, "", headers=(("Location", "/"), ("Set-Cookie", ck)))
                 return self._send(401, strings()["unauth"])

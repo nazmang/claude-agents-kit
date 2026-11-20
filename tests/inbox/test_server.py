@@ -18,12 +18,11 @@ from agents_inbox.store import Store  # noqa: E402
 
 
 class FakeTmux:
-    """One idle agent window; typing puts the text on screen."""
+    """One idle agent window; typing adds a user entry to its transcript."""
 
     def __init__(self, empty=True):
         self.empty = empty
         self.typed = []
-        self.screen = ""
 
     def sessions(self):
         return [dict(name="agent", sid="s1", status="idle", target="=w:0")]
@@ -33,13 +32,9 @@ class FakeTmux:
 
     def type(self, target, text):
         self.typed.append(text)
-        self.screen += text + "\n"
 
-    def capture(self, target):
-        return self.screen
-
-    def transcript_has(self, sid, marker):
-        return False
+    def user_entry_since(self, sid, prefix, since):
+        return any(t.startswith(prefix) for t in self.typed)
 
 
 class ServerTest(unittest.TestCase):
@@ -111,7 +106,8 @@ class ServerTest(unittest.TestCase):
         ck = h["Set-Cookie"]
         self.assertIn(f"inbox={self.token}", ck)
         self.assertIn("HttpOnly", ck)
-        self.assertIn("SameSite=Strict", ck)
+        self.assertIn("SameSite=Lax", ck)
+        self.assertNotIn("Strict", ck)
         st, _, _ = self.req("GET", "/?t=bad", cookie=False)
         self.assertEqual(st, 401)
         st, h, body = self.req("GET", "/")
@@ -186,6 +182,22 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.store.get(q.id).status, "delivered")
         self.assertEqual(self.tmux.typed, [f"owner (inbox, {q.id}): go"])
         self.app.deliver_pending()
+        self.assertEqual(len(self.tmux.typed), 1)
+
+    def test_typed_but_not_in_transcript_stays_answered_no_retype(self):
+        self.tmux.user_entry_since = lambda sid, prefix, since: False
+        q = self.ask()
+        self.req("POST", "/api/answer", {"id": q.id, "text": "go"})
+        self.app.join_kicks()
+        got = self.store.get(q.id)
+        self.assertEqual(got.status, "answered")
+        self.assertTrue(got.typed_at)
+        self.assertEqual(got.typed_sid, "s1")
+        self.app.deliver_pending()
+        self.assertEqual(len(self.tmux.typed), 1)
+        self.tmux.user_entry_since = lambda sid, prefix, since: True
+        self.app.deliver_pending()
+        self.assertEqual(self.store.get(q.id).status, "delivered")
         self.assertEqual(len(self.tmux.typed), 1)
 
     def test_answer_kick_delivers(self):

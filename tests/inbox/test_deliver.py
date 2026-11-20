@@ -1,7 +1,9 @@
+import json
 import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
 os.environ["AGENTS_LANG"] = "ru"
@@ -19,10 +21,17 @@ def cfg(d=None):
     return Config(owner_name="owner", inbox_label="inbox", data_dir=d or tempfile.mkdtemp())
 
 
+T0 = datetime(2026, 11, 20, 16, 45, 0)
+
+
 class FakeTmux:
-    def __init__(self, sessions, empty=True, screen=None, transcript=""):
-        self._s, self.empty, self.screen = sessions, empty, screen
-        self.transcript = transcript
+    """Typing adds a user entry to the transcript of the session typed into
+    (unless echo=False); entries are (sid, aware ts, text)."""
+
+    def __init__(self, sessions, empty=True, echo=True, entries=None, clock=None):
+        self._s, self.empty, self.echo = sessions, empty, echo
+        self.entries = list(entries or [])
+        self.clock = clock or (lambda: T0)
         self.typed = []
 
     def sessions(self):
@@ -33,14 +42,12 @@ class FakeTmux:
 
     def type(self, target, text):
         self.typed.append((target, text))
-        if self.screen is None:
-            self.screen = text
+        if self.echo:
+            sid = next(s["sid"] for s in self._s if s["target"] == target)
+            self.entries.append((sid, self.clock().astimezone(timezone.utc), text))
 
-    def capture(self, target):
-        return self.screen or ""
-
-    def transcript_has(self, sid, marker):
-        return marker in self.transcript
+    def user_entry_since(self, sid, prefix, since):
+        return any(e[0] == sid and e[1] >= since and e[2].startswith(prefix) for e in self.entries)
 
 
 def sess(name="agent", sid="s1", status="idle", target="=w:0"):
@@ -130,17 +137,26 @@ class ConfTests(unittest.TestCase):
         self.assertIsNone(deliver.conf_sid("agent", os.path.join(d, "missing")))
 
 
+def entry(type_, text, ts, sid="s1"):
+    return json.dumps({"type": type_, "sessionId": sid, "timestamp": ts,
+                       "message": {"role": type_, "content": text}}, ensure_ascii=False)
+
+
 class DeliverTests(unittest.TestCase):
-    def run_one(self, fake, conf=None):
-        return deliver.deliver_one(q(), cfg(), fake, conf_path=conf or "/nonexistent", sleep=lambda s: None)
+    def run_one(self, fake, conf=None, question=None, now=T0, typed=None):
+        q1 = question or q()
+        q1.answer = q1.answer or "да"
+        calls = typed if typed is not None else []
+        return deliver.deliver_one(q1, cfg(), fake, conf_path=conf or "/nonexistent",
+                                   sleep=lambda s: None, clock=lambda: now,
+                                   on_typed=lambda sid, when: calls.append((sid, when)))
 
     def test_delivered(self):
         f = FakeTmux([sess()])
-        q1 = q()
-        q1.answer = "да"
-        self.assertEqual(deliver.deliver_one(q1, cfg(), f, conf_path="/nonexistent",
-                                             sleep=lambda s: None), "delivered")
+        calls = []
+        self.assertEqual(self.run_one(f, typed=calls), "delivered")
         self.assertEqual(f.typed, [("=w:0", "owner (inbox, q-1120-01): да")])
+        self.assertEqual(calls, [("s1", T0)])
 
     def test_busy_session_not_typed(self):
         f = FakeTmux([sess(status="busy")])
@@ -159,15 +175,78 @@ class DeliverTests(unittest.TestCase):
     def test_shell_state_is_idle(self):
         self.assertEqual(self.run_one(FakeTmux([sess(status="shell")])), "delivered")
 
-    def test_already_landed_not_retyped(self):
-        f = FakeTmux([sess()], screen="owner (inbox, q-1120-01): да")
-        self.assertEqual(self.run_one(f), "delivered")
-        self.assertEqual(f.typed, [])
-
-    def test_unverified_when_capture_lacks_id(self):
-        f = FakeTmux([sess()], screen="nothing here")
+    def test_quoted_marker_on_screen_is_not_delivery(self):
+        """Regression 20.11: the agent's reply quoted the expected line; the screen
+        had the marker, the transcript had no user entry. Must type, must not
+        report delivered until the transcript shows the typed line."""
+        class Screen(FakeTmux):
+            def capture(self, target):
+                return "● Жду: owner (inbox, q-1120-01): да\n❯ "
+        f = Screen([sess()], echo=False)   # assistant text is not a user entry
         self.assertEqual(self.run_one(f), "unverified")
         self.assertEqual(len(f.typed), 1)
+        f.entries.append(("s1", (T0 + timedelta(seconds=3)).astimezone(timezone.utc),
+                          "owner (inbox, q-1120-01): да"))
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "s1"
+        self.assertEqual(self.run_one(f, question=q1, now=T0 + timedelta(seconds=30)), "delivered")
+        self.assertEqual(len(f.typed), 1)
+
+    def test_transcript_entry_present_is_delivered_without_typing(self):
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "s1"
+        f = FakeTmux([sess()], entries=[("s1", (T0 + timedelta(seconds=1)).astimezone(timezone.utc),
+                                         "owner (inbox, q-1120-01): да")])
+        self.assertEqual(self.run_one(f, question=q1, now=T0 + timedelta(seconds=40)), "delivered")
+        self.assertEqual(f.typed, [])
+
+    def test_entry_before_typing_does_not_count(self):
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "s1"
+        f = FakeTmux([sess()], echo=False, entries=[
+            ("s1", (T0 - timedelta(minutes=5)).astimezone(timezone.utc), "owner (inbox, q-1120-01): да")])
+        self.assertEqual(self.run_one(f, question=q1, now=T0 + timedelta(minutes=3)), "unverified")
+        self.assertEqual(len(f.typed), 1)
+
+    def test_no_retype_within_two_minutes(self):
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "s1"
+        f = FakeTmux([sess()], echo=False)
+        self.assertEqual(self.run_one(f, question=q1, now=T0 + timedelta(seconds=119)), "unverified")
+        self.assertEqual(f.typed, [])
+
+    def test_retype_after_two_minutes_if_input_empty(self):
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "s1"
+        later = T0 + timedelta(minutes=2, seconds=1)
+        f = FakeTmux([sess()], clock=lambda: later)
+        calls = []
+        self.assertEqual(self.run_one(f, question=q1, now=later, typed=calls), "delivered")
+        self.assertEqual(len(f.typed), 1)
+        self.assertEqual(calls, [("s1", later)])
+
+    def test_no_retype_after_two_minutes_if_input_not_empty(self):
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "s1"
+        f = FakeTmux([sess()], empty=False)
+        self.assertEqual(self.run_one(f, question=q1, now=T0 + timedelta(minutes=5)), "busy")
+        self.assertEqual(f.typed, [])
+
+    def test_sid_changed_after_clear_finds_entry_in_typed_sid(self):
+        q1 = q()
+        q1.answer, q1.typed_at, q1.typed_sid = "да", T0.isoformat(), "old"
+        f = FakeTmux([sess(sid="new")], entries=[
+            ("old", (T0 + timedelta(seconds=1)).astimezone(timezone.utc), "owner (inbox, q-1120-01): да")])
+        self.assertEqual(self.run_one(f, question=q1, now=T0 + timedelta(minutes=5)), "delivered")
+        self.assertEqual(f.typed, [])
+
+    def test_untyped_answer_already_in_transcript_since_answered(self):
+        q1 = q()
+        q1.answer, q1.answered_at = "да", T0.isoformat()
+        f = FakeTmux([sess()], entries=[
+            ("s1", (T0 + timedelta(seconds=5)).astimezone(timezone.utc), "owner (inbox, q-1120-01): да")])
+        self.assertEqual(self.run_one(f, question=q1), "delivered")
+        self.assertEqual(f.typed, [])
 
     def test_duplicate_windows_types_once_into_conf_sid(self):
         d = tempfile.mkdtemp()
@@ -179,58 +258,69 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual([t for t, _ in f.typed], ["=w:1"])
 
     def test_other_owner_prefix_does_not_count(self):
-        class Appending(FakeTmux):
-            def type(self, target, text):
-                self.typed.append((target, text))
-                self.screen += "\n" + text
-        f = Appending([sess()], screen="someone (inbox, q-1120-01): old",
-                      transcript='"someone (inbox, q-1120-01): old"')
-        self.assertEqual(self.run_one(f), "delivered")
+        q1 = q()
+        q1.answer, q1.answered_at = "да", T0.isoformat()
+        f = FakeTmux([sess()], echo=False, entries=[
+            ("s1", (T0 + timedelta(seconds=5)).astimezone(timezone.utc), "someone (inbox, q-1120-01): old")])
+        self.assertEqual(self.run_one(f, question=q1), "unverified")
         self.assertEqual(len(f.typed), 1)
 
-    def test_full_prefix_in_screen_not_retyped(self):
-        f = FakeTmux([sess()], screen="owner (inbox, q-1120-01): да")
-        self.assertEqual(self.run_one(f), "delivered")
-        self.assertEqual(f.typed, [])
-
-    def test_marker_only_in_transcript_not_retyped(self):
-        f = FakeTmux([sess()], screen="scrolled away", transcript='..."owner (inbox, q-1120-01): да"...')
-        self.assertEqual(self.run_one(f), "delivered")
-        self.assertEqual(f.typed, [])
-
-    def test_marker_in_scrollback_capture_not_retyped(self):
-        f = FakeTmux([sess()], screen="old\n" * 50 + "owner (inbox, q-1120-01): да\nreply\n" * 3)
-        self.assertEqual(self.run_one(f), "delivered")
-        self.assertEqual(f.typed, [])
-
-    def test_verify_accepts_transcript(self):
+    def test_verify_waits_for_late_transcript(self):
         class Late(FakeTmux):
-            def type(self, target, text):
-                self.typed.append((target, text))
-                self.transcript = text
-        f = Late([sess()], screen="blank")
+            polls = 0
+
+            def user_entry_since(self, sid, prefix, since):
+                self.polls += 1
+                return self.polls > 3 and super().user_entry_since(sid, prefix, since)
+        f = Late([sess()])
         self.assertEqual(self.run_one(f), "delivered")
         self.assertEqual(len(f.typed), 1)
 
 
 class TranscriptTests(unittest.TestCase):
-    def test_finds_marker_in_tail_of_jsonl(self):
+    def write(self, *lines):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, "proj-x"))
         with open(os.path.join(d, "proj-x", "sid-9.jsonl"), "w", encoding="utf-8") as f:
-            f.write('{"a":"owner (inbox, q-1120-01): да"}\n')
-        ops = deliver.TmuxOps()
-        self.assertTrue(ops.transcript_has("sid-9", "owner (inbox, q-1120-01): ", projects_dir=d))
-        self.assertFalse(ops.transcript_has("sid-9", "owner (inbox, q-1120-02): ", projects_dir=d))
-        self.assertFalse(ops.transcript_has("nope", "owner (inbox, q-1120-01): ", projects_dir=d))
-        self.assertFalse(ops.transcript_has("", "owner (inbox, q-1120-01): ", projects_dir=d))
+            f.write("\n".join(lines) + "\n")
+        return d
+
+    SINCE = datetime(2026, 11, 20, 14, 45, 0, tzinfo=timezone.utc)
+
+    def has(self, d, prefix="owner (inbox, q-1120-01): ", sid="sid-9", since=None):
+        return deliver.TmuxOps().user_entry_since(sid, prefix, since or self.SINCE, projects_dir=d)
+
+    def test_user_entry_after_since(self):
+        d = self.write(entry("user", "owner (inbox, q-1120-01): да", "2026-11-20T14:45:03.120Z"))
+        self.assertTrue(self.has(d))
+        self.assertFalse(self.has(d, prefix="owner (inbox, q-1120-02): "))
+        self.assertFalse(self.has(d, sid="nope"))
+        self.assertFalse(self.has(d, sid=""))
+
+    def test_list_content(self):
+        line = json.dumps({"type": "user", "timestamp": "2026-11-20T14:45:03Z", "message": {
+            "role": "user", "content": [{"type": "text", "text": "owner (inbox, q-1120-01): да"}]}})
+        self.assertTrue(self.has(self.write(line)))
+
+    def test_assistant_quote_does_not_count(self):
+        d = self.write(entry("assistant", "Жду: owner (inbox, q-1120-01): да", "2026-11-20T14:45:31Z"),
+                       entry("user", "ок, а что с q-1120-01? owner (inbox, q-1120-01): да",
+                             "2026-11-20T14:45:40Z"))
+        self.assertFalse(self.has(d))
+
+    def test_entry_older_than_since_does_not_count(self):
+        d = self.write(entry("user", "owner (inbox, q-1120-01): да", "2026-11-20T14:44:00Z"))
+        self.assertFalse(self.has(d))
+
+    def test_garbage_lines_ignored(self):
+        d = self.write('{"type":"user"', "not json",
+                       entry("user", "owner (inbox, q-1120-01): да", "2026-11-20T14:46:00Z"))
+        self.assertTrue(self.has(d))
 
     def test_only_tail_is_read(self):
-        d = tempfile.mkdtemp()
-        os.makedirs(os.path.join(d, "p"))
-        with open(os.path.join(d, "p", "s.jsonl"), "w", encoding="utf-8") as f:
-            f.write(", q-1120-01): \n" + "x" * (2 * 1024 * 1024))
-        self.assertFalse(deliver.TmuxOps().transcript_has("s", "owner (inbox, q-1120-01): ", projects_dir=d))
+        d = self.write(entry("user", "owner (inbox, q-1120-01): да", "2026-11-20T14:46:00Z"),
+                       "x" * (2 * 1024 * 1024))
+        self.assertFalse(self.has(d))
 
 
 if __name__ == "__main__":

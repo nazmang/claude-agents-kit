@@ -4,6 +4,7 @@ deliver_one only does tmux work and returns a status string; the caller
 (the server loop) records attempts in the Store.
 """
 import glob
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -43,11 +44,10 @@ class TmuxOps:
         time.sleep(0.5)
         tmuxlib.tmux("send-keys", "-t", target, "Enter")
 
-    def capture(self, target):
-        return tmuxlib.tmux("capture-pane", "-p", "-J", "-S", f"-{SCROLLBACK_LINES}", "-t", target)
-
-    def transcript_has(self, sid, marker, projects_dir=None):
-        """True if `marker` is in the last TAIL_BYTES of the session's transcript."""
+    def user_entry_since(self, sid, prefix, since, projects_dir=None):
+        """True if the session's transcript has a user entry newer than `since`
+        (aware datetime) whose text starts with `prefix`. Assistant text that
+        merely quotes the line does not count."""
         if not sid:
             return False
         root = projects_dir or tmuxlib.PROJECTS_DIR
@@ -56,11 +56,39 @@ class TmuxOps:
                 size = os.path.getsize(p)
                 with open(p, "rb") as f:
                     f.seek(max(0, size - TRANSCRIPT_TAIL))
-                    if marker in f.read().decode("utf-8", "replace"):
-                        return True
+                    lines = f.read().decode("utf-8", "replace").splitlines()
             except OSError:
                 continue
+            for line in reversed(lines):
+                if '"user"' not in line:
+                    continue
+                if _user_entry_matches(line, prefix, since):
+                    return True
         return False
+
+
+def _entry_text(msg):
+    content = (msg or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                return c.get("text") or ""
+    return ""
+
+
+def _user_entry_matches(line, prefix, since):
+    try:
+        d = json.loads(line)
+        if d.get("type") != "user":
+            return False
+        ts = datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00"))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.astimezone()
+    return ts >= since and _entry_text(d.get("message")).lstrip().startswith(prefix)
 
 
 _CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -135,25 +163,57 @@ def conf_sid(name, path=None):
     return None
 
 
-def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep) -> str:
-    """Returns delivered | busy | no-session | unverified. Does not touch the Store."""
+VERIFY_TIMEOUT = 5.0                  # wait this long for the typed line in the transcript
+RETYPE_AFTER = timedelta(minutes=2)   # typed but never seen: type again after this
+TS_SLACK = timedelta(seconds=2)       # typed_at has seconds precision
+
+
+def _aware(iso):
+    try:
+        return datetime.fromisoformat(iso).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep, clock=datetime.now,
+                on_typed=None) -> str:
+    """Returns delivered | busy | no-session | unverified. Does not touch the Store;
+    on_typed(sid, when) is called right after typing so the caller can record it.
+
+    Delivered means the session's transcript has a user entry starting with the
+    answer prefix, newer than the typing moment. Screen text is never proof: the
+    agent's own reply may quote the expected line."""
     tmux = tmux or TmuxOps()
     s = pick_target(q.from_, tmux.sessions(), conf_sid(q.from_, conf_path))
     if s is None:
         return "no-session"
+    prefix = answer_prefix(q, cfg)
+    typed = _aware(getattr(q, "typed_at", ""))
+    since = typed or _aware(q.answered_at)
+    # /clear gives the window a new sid: look in the one typed into and the current one
+    sids = [x for x in dict.fromkeys((getattr(q, "typed_sid", ""), s.get("sid"))) if x]
+
+    def landed(after):
+        return after is not None and any(tmux.user_entry_since(x, prefix, after - TS_SLACK)
+                                         for x in sids)
+
+    if landed(since):
+        return "delivered"
+    now = clock()
+    if typed and now.astimezone(timezone.utc) - typed < RETYPE_AFTER:
+        return "unverified"          # typed recently: wait for the transcript, do not retype
     if s.get("status") not in IDLE_STATES or not tmux.input_empty(s["target"]):
         return "busy"
-    marker = answer_prefix(q, cfg)
-    escaped = json.dumps(marker, ensure_ascii=False)[1:-1]   # as stored in a jsonl transcript
-    escaped_ascii = json.dumps(marker)[1:-1]
-
-    def landed():
-        if marker in tmux.capture(s["target"]):
-            return True
-        return any(tmux.transcript_has(s.get("sid"), m) for m in dict.fromkeys((marker, escaped, escaped_ascii)))
-
-    if landed():   # already landed earlier (maybe scrolled away): never type twice
-        return "delivered"
+    typed = now.astimezone(timezone.utc)
     tmux.type(s["target"], format_answer(q, q.answer, cfg))
-    sleep(VERIFY_DELAY)
-    return "delivered" if landed() else "unverified"
+    if on_typed:
+        on_typed(s.get("sid") or "", now)
+    sids = [s.get("sid")] if s.get("sid") else []
+    waited = 0.0
+    while True:
+        if landed(typed):
+            return "delivered"
+        if waited >= VERIFY_TIMEOUT:
+            return "unverified"
+        sleep(VERIFY_DELAY)
+        waited += VERIFY_DELAY
