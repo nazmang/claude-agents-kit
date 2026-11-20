@@ -129,6 +129,7 @@ export const STRINGS = {
     nobody: 'нікого',
     band_idle: '{n} чекають ({a} 💤)',
     band_waiting: 'чекають на тебе: {n}',
+    band_inbox: '📥 {n}',
     cold_wake: ' розбудив холодний кеш',
     no_snapshot: 'чек-лист: знімка ще немає',
     waiting_line: 'чекають на тебе: {w} · відкрито: {o} · знімок {at}',
