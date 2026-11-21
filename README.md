@@ -87,6 +87,11 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 - `context` = `compact` means nothing has been added since the last compaction.
 - `agents compact <name> --wait`: compact one session now and wait until the
   transcript gets a new `compact_boundary`.
+- `agents clear <name> [--timeout MIN]`: wait until the session is `idle` with
+  an empty input box, then `/clear` it; done = the session id changed. A
+  background command (`shell`) counts as busy. It cannot tell a finished task
+  from a session waiting for a reply: run it only when the agent reported it is
+  done.
 - `agents up|down <project> [names…]`: start/stop a project's sessions in tmux.
   - Plain sessions: list them in `~/.config/agents/sessions.conf`
     (`project | name | dir | model | session id [| extra args]`). `up` opens

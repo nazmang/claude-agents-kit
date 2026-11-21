@@ -14,6 +14,11 @@
                                 compact one session now if it runs in tmux, is
                                 idle and has an empty input box; --wait - wait
                                 until done (exit 0 = done)
+  agents clear <name> [--timeout MIN]
+                                /clear one session: wait until it is idle with an
+                                empty input box (up to MIN minutes, 30 by default),
+                                then clear it; exit 0 = cleared. For a lead that
+                                cleans up its team between tasks
   agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
              [--ref R] [--from NAME] "title"
                                 put a question to the owner (kinds: decision,
@@ -98,6 +103,11 @@ STRINGS = {
         "done_nothing": "nothing to compact (Not enough messages)",
         "fail_compact": "compaction did not finish in 10 min",
         "no_session": "no live session '{name}'",
+        "clear_waiting": "busy or a draft in the input box - waiting up to {min:.0f} min",
+        "clear_timeout": "still busy after {min:.0f} min - not cleared",
+        "sent_clear": "/clear (context {k}k, {label})",
+        "done_cleared": "cleared, new session {sid}",
+        "clear_unconfirmed": "/clear sent, but the session id did not change in 30 s",
         "closed_cold": "closed (resume id {sid})",
         "running_first": "running - `agents down {project}` first",
         "already_running": "already running (pid {pid}, {where})",
@@ -123,6 +133,11 @@ STRINGS = {
         "done_nothing": "сжимать нечего (Not enough messages)",
         "fail_compact": "сжатие не закончилось за 10 мин",
         "no_session": "нет живой сессии '{name}'",
+        "clear_waiting": "занята или в поле ввода черновик - жду до {min:.0f} мин",
+        "clear_timeout": "занята дольше {min:.0f} мин - не очищена",
+        "sent_clear": "/clear (контекст {k}k, {label})",
+        "done_cleared": "очищена, новая сессия {sid}",
+        "clear_unconfirmed": "/clear отправлен, но id сессии за 30 с не сменился",
         "closed_cold": "закрыта (id для возобновления {sid})",
         "running_first": "работает - сначала `agents down {project}`",
         "already_running": "уже работает (pid {pid}, {where})",
@@ -148,6 +163,11 @@ STRINGS = {
         "done_nothing": "стискати нічого (Not enough messages)",
         "fail_compact": "стиснення не завершилося за 10 хв",
         "no_session": "немає живої сесії '{name}'",
+        "clear_waiting": "зайнята або в полі введення чернетка - чекаю до {min:.0f} хв",
+        "clear_timeout": "зайнята довше {min:.0f} хв - не очищена",
+        "sent_clear": "/clear (контекст {k}k, {label})",
+        "done_cleared": "очищена, нова сесія {sid}",
+        "clear_unconfirmed": "/clear надіслано, але id сесії за 30 с не змінився",
         "closed_cold": "закрита (id для відновлення {sid})",
         "running_first": "працює - спершу `agents down {project}`",
         "already_running": "уже працює (pid {pid}, {where})",
@@ -186,6 +206,11 @@ DOC_RU = """agents - живые сессии Claude Code на этой маши�
                                 сжать одну сессию сейчас, если она в tmux,
                                 простаивает и поле ввода пустое; --wait - ждать
                                 конца (код 0 = готово)
+  agents clear <имя> [--timeout МИН]
+                                /clear одной сессии: дождаться, пока она
+                                простаивает с пустым полем ввода (до МИН минут,
+                                по умолчанию 30), и очистить; код 0 = очищена.
+                                Для ведущего, который чистит команду между задачами
   agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
              [--ref R] [--from ИМЯ] "заголовок"
                                 задать вопрос владельцу (kind: decision, command,
@@ -247,6 +272,11 @@ DOC_UK = """agents - живі сесії Claude Code на цій машині: �
                                 стиснути одну сесію зараз, якщо вона в tmux,
                                 простоює і поле введення порожнє; --wait - чекати
                                 завершення (код 0 = готово)
+  agents clear <ім'я> [--timeout ХВ]
+                                /clear однієї сесії: дочекатися, поки вона
+                                простоює з порожнім полем введення (до ХВ хвилин,
+                                за замовчуванням 30), і очистити; код 0 = очищена.
+                                Для ведучого, який чистить команду між задачами
   agents ask [--kind K] [--blocking] [--options "a,b"] [--command C] [--body B]
              [--ref R] [--from ІМ'Я] "заголовок"
                                 поставити питання власнику (kind: decision, command,
@@ -601,6 +631,66 @@ def split_comment(line):
     return line, ""
 
 
+def find_session(name):
+    for s in sessions():
+        if s["name"] == name:
+            return s
+    return None
+
+
+def ready_for_clear(s):
+    # Only "idle": "shell" means a background command (a Monitor, a wait for a
+    # deploy) is still running for the current task - clearing it loses the task.
+    return bool(s["target"]) and s["status"] == "idle" and input_empty(s["target"])
+
+
+def cmd_clear(name, timeout_min):
+    """Wait until the session is idle with an empty input box, then /clear it.
+
+    A background command ("shell") counts as busy. Two idle checks 10 s
+    apart: a session that has just finished a turn often
+    starts another one right away (a queued message, a background task).
+    Done = the session id changed: /clear starts a new transcript.
+    """
+    s = find_session(name)
+    if not s:
+        print(t("no_session", name=name))
+        return False
+    if not s["target"]:
+        log(f"skip  {name}: " + t("not_in_tmux"))
+        return False
+    deadline = time.time() + timeout_min * 60
+    ready, told = 0, False
+    while True:
+        s = find_session(name)
+        if not s:
+            print(t("no_session", name=name))
+            return False
+        ready = ready + 1 if ready_for_clear(s) else 0
+        if ready >= 2:
+            break
+        if time.time() > deadline:
+            log(f"skip  {name}: " + t("clear_timeout", min=timeout_min))
+            return False
+        if not ready and not told:
+            log(f"wait  {name}: " + t("clear_waiting", min=timeout_min))
+            told = True
+        time.sleep(10)
+    old_sid = s["sid"]
+    tmux("send-keys", "-t", s["target"], "-l", "/clear")
+    time.sleep(0.5)
+    tmux("send-keys", "-t", s["target"], "Enter")
+    log(f"sent  {name}: " + t("sent_clear", k=s["ctx"]//1000, label=s["label"]))
+    for _ in range(15):
+        time.sleep(2)
+        s = find_session(name)
+        if s and s["sid"] and s["sid"] != old_sid:
+            log(f"done  {name}: " + t("done_cleared", sid=s["sid"]))
+            return True
+    log(f"FAIL  {name}: " + t("clear_unconfirmed"))
+    return False
+
+
 def conf_lines(path):
     if not os.path.exists(path):
         return []
@@ -787,6 +877,8 @@ def main(argv):
         cmd_messages(opt_number(argv, "--hours", 6))
     elif c == "compact" and len(argv) >= 2:
         return 0 if cmd_compact(argv[1], "--wait" in argv) else 1
+    elif c == "clear" and len(argv) >= 2:
+        return 0 if cmd_clear(argv[1], opt_number(argv, "--timeout", 30)) else 1
     elif c in ("up", "down") and len(argv) >= 2:
         return cmd_updown(c, argv[1], argv[2:])
     else:
