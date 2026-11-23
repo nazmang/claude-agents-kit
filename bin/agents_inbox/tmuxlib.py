@@ -128,12 +128,36 @@ def sessions():
     return sorted(out, key=lambda s: (s["label"] or "~", s["name"]))
 
 
-def input_empty(target):
-    screen = tmux("capture-pane", "-e", "-p", "-t", target)
+_SGR = re.compile(r"\x1b\[([0-9;]*)m")
+
+
+def _is_dim(params):
+    """True if an SGR parameter list sets the dim attribute (2). The 2 inside a
+    colour (38;2;r;g;b, 38;5;2 and the 48/58 forms) is not dim."""
+    p = params.split(";")
+    i = 0
+    while i < len(p):
+        if p[i] in ("38", "48", "58"):
+            i += 5 if p[i + 1:i + 2] == ["2"] else 3
+            continue
+        if p[i] == "2":
+            return True
+        i += 1
+    return False
+
+
+def prompt_empty(screen):
+    """True when the last prompt line (❯) of a captured screen (with escapes) holds no draft.
+    Dim text after the prompt is the placeholder hint, not a draft. The hint comes
+    either as ESC[2m or, with the cursor on its first letter, as ESC[7m + ESC[0;2m."""
     lines = [l for l in screen.splitlines() if "❯" in l]
     if not lines:
         return False
     rest = lines[-1].split("❯", 1)[1].replace("\xa0", " ")
-    if "\x1b[2m" in rest:          # dim placeholder text = empty
+    if any(_is_dim(m.group(1)) for m in _SGR.finditer(rest)):
         return True
     return re.sub(r"\x1b\[[0-9;]*m|\s", "", rest) == ""
+
+
+def input_empty(target):
+    return prompt_empty(tmux("capture-pane", "-e", "-p", "-t", target))
