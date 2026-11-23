@@ -48,6 +48,7 @@ PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.html"
 
 STRINGS = {
     "ru": {
+        "new": "новый", "sound_on": "🔔 Звук включён", "sound_off": "🔕 Включить звук",
         "title": "Входящие агентов", "urgent": "Срочно", "decisions": "Решения",
         "commands": "Команды", "talk": "Обсудить", "closed": "Закрыто за 7 дней",
         "empty": "Вопросов нет", "own": "Свой ответ", "send": "Отправить",
@@ -59,6 +60,7 @@ STRINGS = {
         "replay": "Уже отвечено", "unauth": "Нужна ссылка с токеном.",
     },
     "en": {
+        "new": "new", "sound_on": "🔔 Sound on", "sound_off": "🔕 Turn sound on",
         "title": "Agents inbox", "urgent": "Urgent", "decisions": "Decisions",
         "commands": "Commands", "talk": "Discuss", "closed": "Closed in the last 7 days",
         "empty": "No questions", "own": "Own answer", "send": "Send",
@@ -70,6 +72,7 @@ STRINGS = {
         "replay": "Already answered", "unauth": "Open the link with the token.",
     },
     "uk": {
+        "new": "новий", "sound_on": "🔔 Звук увімкнено", "sound_off": "🔕 Увімкнути звук",
         "title": "Вхідні агентів", "urgent": "Терміново", "decisions": "Рішення",
         "commands": "Команди", "talk": "Обговорити", "closed": "Закрито за 7 днів",
         "empty": "Питань немає", "own": "Своя відповідь", "send": "Надіслати",
