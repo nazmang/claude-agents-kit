@@ -87,6 +87,11 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 - `context` = `compact` means nothing has been added since the last compaction.
 - `agents compact <name> --wait`: compact one session now and wait until the
   transcript gets a new `compact_boundary`.
+- `agents clear <name> [--timeout MIN]`: wait until the session is `idle` with
+  an empty input box, then `/clear` it; done = the session id changed. A
+  background command (`shell`) counts as busy. It cannot tell a finished task
+  from a session waiting for a reply: run it only when the agent reported it is
+  done.
 - `agents up|down <project> [names…]`: start/stop a project's sessions in tmux.
   - Plain sessions: list them in `~/.config/agents/sessions.conf`
     (`project | name | dir | model | session id [| extra args]`). `up` opens
@@ -215,6 +220,28 @@ systemctl --user enable --now agents-inbox
 ```
 
 `install.sh` links `agents-inbox` into `~/.local/bin` next to `agents`.
+
+### Voice API
+
+For a voice assistant on another host (Home Assistant with a rest sensor, for
+example). It is off until `voice_token_file` is set in `inbox.conf`; the server
+then creates that token (mode 600) on start. Send it as
+`Authorization: Bearer <token>`. It is a separate, weaker token than the page
+token: it cannot open the page or call `/api/answer`.
+
+| Call | What it does |
+|---|---|
+| `GET /api/questions` | The same list the page reads. |
+| `POST /api/voice/answer` `{"id","text"}` | Answers a question, but only a `decision` or `info-needed` one without `--blocking`. Anything else gets `403 {"error":"voice-defer-only"}`: a `command`, a `brainstorm` and a blocking question need the page. |
+| `POST /api/voice/say` `{"to","text"}` | Queues a dictated line (500 characters at most) for the agent named `to` in `sessions.conf`. `202` with an id; `422` for an unknown name; `409` when that agent has no live window. |
+
+A dictated line is typed the same way as an answer: only into an idle window
+with an empty input, retried every 30 seconds, confirmed by the transcript. It
+looks like `<owner_name> (<voice_label>, v-MMDD-NN): <text>`, so it can never be
+read as a slash command, and control characters are stripped. A line nobody
+could take within an hour is dropped. Speech recognition makes mistakes: tell
+your agents (in `CLAUDE.md`) how much weight a `(<voice_label>, ...)` line
+carries, for example that it never counts as approval for anything irreversible.
 
 ### Pushes
 

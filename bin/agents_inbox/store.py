@@ -41,6 +41,47 @@ class Question:
     typed_sid: str = ""
 
 
+@dataclass
+class Say:
+    """A line the owner dictated for one agent's window (the voice API).
+    Duck-types the Question fields deliver_one reads: from_, answer, answered_at."""
+    id: str
+    to: str
+    text: str
+    created: str = ""
+    status: str = "queued"      # queued | delivered | expired
+    typed_at: str = ""
+    typed_sid: str = ""
+    delivered_at: str = ""
+
+    @property
+    def from_(self):
+        return self.to
+
+    @property
+    def answer(self):
+        return self.text
+
+    @property
+    def answered_at(self):
+        return self.created
+
+
+_SAY_COLS = "id, to_, text, created, status, typed_at, typed_sid, delivered_at"
+
+_SAY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS says (
+  id TEXT PRIMARY KEY, to_ TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued', typed_at TEXT NOT NULL DEFAULT '',
+  typed_sid TEXT NOT NULL DEFAULT '', delivered_at TEXT NOT NULL DEFAULT ''
+)"""
+
+
+def _say(r) -> Say:
+    return Say(id=r[0], to=r[1], text=r[2], created=r[3], status=r[4], typed_at=r[5],
+               typed_sid=r[6], delivered_at=r[7])
+
+
 _COLS = ("id, from_, kind, blocking, title, body, options, command, ref, created, status, "
          "answer, answered_at, delivered_at, first_attempt, last_attempt, notified_at, otok, "
          "typed_at, typed_sid")
@@ -79,6 +120,7 @@ class Store:
         try:
             c.execute("PRAGMA journal_mode=WAL")
             c.execute(_SCHEMA)
+            c.execute(_SAY_SCHEMA)
             have = {r[1] for r in c.execute("PRAGMA table_info(questions)")}
             for name, decl in _ADDED:
                 if name not in have:
@@ -232,3 +274,47 @@ class Store:
                 "ORDER BY created, id")]
         finally:
             c.close()
+
+    # --- dictated lines (voice API) -----------------------------------------
+    def create_say(self, to: str, text: str, now: datetime | None = None) -> Say:
+        now = now or datetime.now()
+        prefix = f"v-{now:%m%d}-"
+        c = self._conn()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            n = c.execute("SELECT COUNT(*) FROM says WHERE id LIKE ?",
+                          (prefix + "%",)).fetchone()[0] + 1
+            sid = f"{prefix}{n:02d}"
+            c.execute(f"INSERT INTO says ({_SAY_COLS}) VALUES (?,?,?,?,'queued','','','')",
+                      (sid, to, text, _iso(now)))
+            c.commit()
+            r = c.execute(f"SELECT {_SAY_COLS} FROM says WHERE id=?", (sid,)).fetchone()
+            return _say(r)
+        finally:
+            c.close()
+
+    def get_say(self, id: str) -> Say | None:
+        c = self._conn()
+        try:
+            r = c.execute(f"SELECT {_SAY_COLS} FROM says WHERE id=?", (id,)).fetchone()
+            return _say(r) if r else None
+        finally:
+            c.close()
+
+    def pending_says(self) -> list:
+        c = self._conn()
+        try:
+            return [_say(r) for r in c.execute(
+                f"SELECT {_SAY_COLS} FROM says WHERE status='queued' ORDER BY created, id")]
+        finally:
+            c.close()
+
+    def mark_say_typed(self, id: str, sid: str, when: datetime | None = None) -> None:
+        self._set("UPDATE says SET typed_at=?, typed_sid=? WHERE id=?",
+                  (_iso(when), sid or "", id))
+
+    def mark_say_delivered(self, id: str) -> None:
+        self._set("UPDATE says SET status='delivered', delivered_at=? WHERE id=?", (_iso(), id))
+
+    def mark_say_expired(self, id: str) -> None:
+        self._set("UPDATE says SET status='expired' WHERE id=? AND status='queued'", (id,))

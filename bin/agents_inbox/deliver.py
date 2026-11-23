@@ -100,8 +100,13 @@ def answer_prefix(q, cfg) -> str:
     return f"{cfg.owner_name} ({cfg.inbox_label}, {q.id}): "
 
 
-def format_answer(q, text, cfg) -> str:
-    prefix = answer_prefix(q, cfg)
+def say_prefix(say, cfg) -> str:
+    """Prefix of a dictated line: `<owner_name> (<voice_label>, <id>): `."""
+    return f"{cfg.owner_name} ({cfg.voice_label}, {say.id}): "
+
+
+def format_answer(q, text, cfg, prefix=None) -> str:
+    prefix = prefix or answer_prefix(q, cfg)
     text = _CSI.sub("", text)
     flat = _BAD_INLINE.sub("", re.sub(r"\r\n|\r|\n", " ⏎ ", text))
     if len(flat) <= MAX_INLINE:
@@ -176,18 +181,20 @@ def _aware(iso):
 
 
 def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep, clock=datetime.now,
-                on_typed=None) -> str:
+                on_typed=None, prefix=None) -> str:
     """Returns delivered | busy | no-session | unverified. Does not touch the Store;
     on_typed(sid, when) is called right after typing so the caller can record it.
 
     Delivered means the session's transcript has a user entry starting with the
     answer prefix, newer than the typing moment. Screen text is never proof: the
-    agent's own reply may quote the expected line."""
+    agent's own reply may quote the expected line.
+
+    `prefix` replaces the answer prefix; a dictated line passes say_prefix()."""
     tmux = tmux or TmuxOps()
     s = pick_target(q.from_, tmux.sessions(), conf_sid(q.from_, conf_path))
     if s is None:
         return "no-session"
-    prefix = answer_prefix(q, cfg)
+    prefix = prefix or answer_prefix(q, cfg)
     typed = _aware(getattr(q, "typed_at", ""))
     since = typed or _aware(q.answered_at)
     # /clear gives the window a new sid: look in the one typed into and the current one
@@ -205,7 +212,7 @@ def deliver_one(q, cfg, tmux=None, conf_path=None, sleep=time.sleep, clock=datet
     if s.get("status") not in IDLE_STATES or not tmux.input_empty(s["target"]):
         return "busy"
     typed = now.astimezone(timezone.utc)
-    tmux.type(s["target"], format_answer(q, q.answer, cfg))
+    tmux.type(s["target"], format_answer(q, q.answer, cfg, prefix))
     if on_typed:
         on_typed(s.get("sid") or "", now)
     sids = [s.get("sid")] if s.get("sid") else []

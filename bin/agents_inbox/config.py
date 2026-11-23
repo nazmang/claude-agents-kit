@@ -18,6 +18,8 @@ class Config:
     quiet_hours: tuple = (23, 8)
     data_dir: str = "~/.local/share/agents/inbox"
     token_file: str = "~/.config/agents/inbox.token"
+    voice_token_file: str = ""      # empty = the voice API is off
+    voice_label: str = "voice"
 
 
 def default_path() -> str:
@@ -54,7 +56,7 @@ def load(path: str | None = None) -> Config:
         pass
     for key, val in values.items():
         if key in ("owner_name", "inbox_label", "base_url", "ntfy_url", "ntfy_topic",
-                   "away_marker"):
+                   "away_marker", "voice_label"):
             setattr(cfg, key, val)
         elif key == "port":
             cfg.port = int(val)
@@ -62,9 +64,10 @@ def load(path: str | None = None) -> Config:
             cfg.listen = [p.strip() for p in val.split(",") if p.strip()]
         elif key == "quiet_hours":
             cfg.quiet_hours = _parse_hours(val)
-        elif key in ("ntfy_token_file", "presence_file", "data_dir", "token_file"):
+        elif key in ("ntfy_token_file", "presence_file", "data_dir", "token_file",
+                     "voice_token_file"):
             setattr(cfg, key, val)
-    for key in ("data_dir", "token_file", "ntfy_token_file", "presence_file"):
+    for key in ("data_dir", "token_file", "ntfy_token_file", "presence_file", "voice_token_file"):
         v = getattr(cfg, key)
         if v:
             setattr(cfg, key, os.path.expandvars(os.path.expanduser(v)))
