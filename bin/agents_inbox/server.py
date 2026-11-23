@@ -3,6 +3,11 @@
 Listens only on the addresses from `listen` in the config, never on a wildcard.
 The page is protected by a token cookie; one-shot ntfy buttons use the
 per-question `otok` instead; /api/created is accepted only from loopback.
+
+The voice API (/api/voice/*) is for a voice assistant on another host. It is off
+until `voice_token_file` is set, takes its own Bearer token and can do less than
+the page: read the list, answer only non-blocking `decision` / `info-needed`
+questions, and queue a dictated line for one agent's window.
 """
 import argparse
 import hmac
@@ -32,6 +37,9 @@ NOTIFY_EVERY = 60
 STUCK_AFTER = timedelta(minutes=15)
 CLOSED_DAYS = 7
 MAX_BODY = 64 * 1024
+VOICE_KINDS = ("decision", "info-needed")   # what a voice answer may close
+MAX_SAY = 500                               # characters in one dictated line
+SAY_TTL = timedelta(hours=1)                # a dictated line nobody could take is dropped
 LOCAL = ("127.0.0.1", "::1")
 COOKIE_MAX_AGE = 365 * 24 * 3600
 _QUERY = re.compile(r"\?[^\s\"']*")
@@ -126,6 +134,8 @@ class App:
         with self._deliver_lock:
             for q in self._guard("pending", self.store.pending_delivery) or []:
                 self._guard(f"deliver {q.id}", self._deliver, q)
+            for say in self._guard("pending says", self.store.pending_says) or []:
+                self._guard(f"say {say.id}", self._deliver_say, say)
 
     def _deliver(self, q):
         self.store.mark_attempt(q.id)
@@ -135,6 +145,25 @@ class App:
         if r == "delivered":
             self.store.mark_delivered(q.id)
         return r
+
+    def _deliver_say(self, say):
+        if self.clock() - datetime.fromisoformat(say.created) > SAY_TTL:
+            self.store.mark_say_expired(say.id)
+            self.log(f"inbox: say {say.id} expired undelivered")
+            return "expired"
+        r = deliver.deliver_one(say, self.cfg, tmux=self.tmux, conf_path=self.conf_path,
+                                sleep=self.sleep, clock=self.clock,
+                                prefix=deliver.say_prefix(say, self.cfg),
+                                on_typed=lambda sid, when: self.store.mark_say_typed(say.id, sid, when))
+        if r == "delivered":
+            self.store.mark_say_delivered(say.id)
+        return r
+
+    def has_session(self, name):
+        """True when a live window of `name` exists to type into."""
+        tmux = self.tmux or deliver.TmuxOps()
+        return deliver.pick_target(name, tmux.sessions(),
+                                   deliver.conf_sid(name, self.conf_path)) is not None
 
     def notify_tick(self):
         with self._notify_lock:
@@ -177,6 +206,11 @@ class App:
         return out
 
 
+def voice_allowed(q):
+    """A voice answer may close only a non-blocking decision or info-needed question."""
+    return q.kind in VOICE_KINDS and not q.blocking
+
+
 def public(q, now):
     d = asdict(q)
     d.pop("otok", None)
@@ -191,6 +225,7 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     app = None      # set per server
     token = ""
+    voice_token = ""    # empty = the voice API is off
 
     # --- plumbing ---------------------------------------------------------
     def log_message(self, fmt, *args):
@@ -226,6 +261,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         m = c.get("inbox")
         return bool(m) and hmac.compare_digest(m.value.encode(), self.token.encode())
+
+    def _voice_authed(self):
+        """Bearer voice token. False also when the voice API is off."""
+        if not self.voice_token:
+            return False
+        scheme, _, value = self.headers.get("Authorization", "").partition(" ")
+        return (scheme.lower() == "bearer"
+                and hmac.compare_digest(value.strip().encode(), self.voice_token.encode()))
 
     def _body(self):
         """Parsed JSON body, or None after an error response has been sent."""
@@ -264,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, strings()["unauth"])
             return self._page()
         if u.path == "/api/questions":
-            if not self._authed():
+            if not self._authed() and not self._voice_authed():
                 return self._send(401, "unauthorized")
             return self._json(200, self.app.visible())
         self._send(404, "not found")
@@ -273,6 +316,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/answer":
             return self._answer()
+        if path in ("/api/voice/answer", "/api/voice/say"):
+            if not self.voice_token:
+                return self._send(404, "not found")
+            if not self._voice_authed():
+                return self._send(401, "unauthorized")
+            return self._voice_answer() if path.endswith("/answer") else self._voice_say()
         if path == "/api/created":
             if self.client_address[0] not in LOCAL and self.client_address[0] not in self.local_addrs:
                 return self._send(403, "forbidden")
@@ -300,6 +349,46 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(409, "already closed")
         self.app.kick(self.app.deliver_pending)
         self._json(200, public(q, self.app.clock()))
+
+    def _voice_answer(self):
+        data = self._body()
+        if data is None:
+            return
+        qid, text = data.get("id"), data.get("text")
+        if not isinstance(qid, str) or not isinstance(text, str) or not text.strip():
+            return self._send(400, "id and text required")
+        q = self.app.store.get(qid)
+        if q is None:
+            return self._send(404, "not found")
+        if not voice_allowed(q):
+            return self._json(403, {"error": "voice-defer-only", "id": q.id, "kind": q.kind,
+                                    "blocking": q.blocking})
+        try:
+            q = self.app.store.answer(qid, text)
+        except KeyError:
+            return self._send(404, "not found")
+        except AlreadyClosed:
+            return self._send(409, "already closed")
+        self.app.kick(self.app.deliver_pending)
+        self._json(200, public(q, self.app.clock()))
+
+    def _voice_say(self):
+        data = self._body()
+        if data is None:
+            return
+        to, text = data.get("to"), data.get("text")
+        if not isinstance(to, str) or not isinstance(text, str) or not text.strip():
+            return self._send(400, "to and text required")
+        text = " ".join(text.split())
+        if len(text) > MAX_SAY:
+            return self._send(413, "too long")
+        if to not in deliver.conf_names(self.app.conf_path):
+            return self._json(422, {"error": "unknown-agent", "to": to})
+        if not self.app.has_session(to):
+            return self._json(409, {"error": "no-session", "to": to})
+        say = self.app.store.create_say(to, text)
+        self.app.kick(self.app.deliver_pending)
+        self._json(202, {"id": say.id, "to": say.to, "status": say.status})
 
     def _otok(self, otok, idx):
         s = strings()
@@ -385,6 +474,7 @@ def serve(cfg, app):
     """Bind one ThreadingHTTPServer per address in cfg.listen and start them."""
     _check_listen(cfg.listen)
     token = page_token(cfg.token_file)
+    voice_token = page_token(cfg.voice_token_file) if cfg.voice_token_file else ""
     servers, threads = [], []
     local_addrs = frozenset(a.strip().strip("[]") for a in cfg.listen)
     try:
@@ -394,6 +484,7 @@ def serve(cfg, app):
                 "address_family": socket.AF_INET6 if ":" in host else socket.AF_INET,
                 "daemon_threads": True})
             h = type("InboxHandler", (Handler,), {"app": app, "token": token,
+                                                  "voice_token": voice_token,
                                                   "local_addrs": local_addrs})
             servers.append(cls((host, cfg.port), h))
     except OSError:
@@ -417,6 +508,8 @@ def main(argv=None):
     running = serve(cfg, app)
     for addr, port in zip(cfg.listen, running.ports):
         _log_stderr(f"inbox: listening on {addr}:{port} (page token in {cfg.token_file})")
+    if cfg.voice_token_file:
+        _log_stderr(f"inbox: voice API on (token in {cfg.voice_token_file})")
     stop = threading.Event()
     loop = threading.Thread(target=app.run_loop, args=(stop,), daemon=True)
     loop.start()

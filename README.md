@@ -221,6 +221,28 @@ systemctl --user enable --now agents-inbox
 
 `install.sh` links `agents-inbox` into `~/.local/bin` next to `agents`.
 
+### Voice API
+
+For a voice assistant on another host (Home Assistant with a rest sensor, for
+example). It is off until `voice_token_file` is set in `inbox.conf`; the server
+then creates that token (mode 600) on start. Send it as
+`Authorization: Bearer <token>`. It is a separate, weaker token than the page
+token: it cannot open the page or call `/api/answer`.
+
+| Call | What it does |
+|---|---|
+| `GET /api/questions` | The same list the page reads. |
+| `POST /api/voice/answer` `{"id","text"}` | Answers a question, but only a `decision` or `info-needed` one without `--blocking`. Anything else gets `403 {"error":"voice-defer-only"}`: a `command`, a `brainstorm` and a blocking question need the page. |
+| `POST /api/voice/say` `{"to","text"}` | Queues a dictated line (500 characters at most) for the agent named `to` in `sessions.conf`. `202` with an id; `422` for an unknown name; `409` when that agent has no live window. |
+
+A dictated line is typed the same way as an answer: only into an idle window
+with an empty input, retried every 30 seconds, confirmed by the transcript. It
+looks like `<owner_name> (<voice_label>, v-MMDD-NN): <text>`, so it can never be
+read as a slash command, and control characters are stripped. A line nobody
+could take within an hour is dropped. Speech recognition makes mistakes: tell
+your agents (in `CLAUDE.md`) how much weight a `(<voice_label>, ...)` line
+carries, for example that it never counts as approval for anything irreversible.
+
 ### Pushes
 
 With `ntfy_topic` set, a push goes out only for a `--blocking` question or a
